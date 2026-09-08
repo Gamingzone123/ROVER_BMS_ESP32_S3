@@ -1,41 +1,43 @@
 /* ======= Includes ======= */
 #include <Arduino.h>
-#include <Adafruit_GFX.h>
-#include <Adafruit_ST7735.h>
-#include <SPI.h> // SPI 0 and 1 are used by the board itself, SPI 2 is used for the ethernet, must use eth 3 for tft screen
+#include <Adafruit_GFX.h>    // base adafruit graphic lib required by the tft
+#include <Adafruit_ST7735.h> // library for the tft
+#include <SPI.h>             // SPI 0 and 1 are used by the board itself, SPI 2 is used for the ethernet, must use eth 3 for tft screen
 #include <ArduinoJson.h>
+#include <stdint.h>
 
 /* ======= Compiler Switches ======= */
 #define DEBUG_ENABLED 0              // compiler switch for debugging with a PC
 #define DISABLE_DISCHARGE_ON_ERROR 0 // whether to disable rover power on BMS error
 
 /* ======= Pin defs ======= */
+// Use constexpr instead of #define, more useful for modern C++ at compile time
 
-/*preset SPI pins for Ethernet port are hardwired not changeable*/
-#define ETH_RST 14  // GPIO9
-#define ETH_INT 15  // GPIO10
-#define ETH_MOSI 16 // GPIO11
-#define ETH_MISO 17 // GPIO12
-#define ETH_SCLK 18 // GPIO13
-#define ETH_CS 19   // GPIO14
+/*preset SPI pins for W5500 Ethernet are hardwired not changeable*/
+constexpr uint8_t W5500_RST = 14;  // GPIO9
+constexpr uint8_t W5500_INT = 15;  // GPIO10
+constexpr uint8_t W5500_MOSI = 16; // GPIO11
+constexpr uint8_t W5500_MISO = 17; // GPIO12
+constexpr uint8_t W5500_SCLK = 18; // GPIO13
+constexpr uint8_t W5500_CS = 19;   // GPIO14
 
 /*the SD card pins are also set in stone if it is in use*/
-#define SD_CS 9    // GPIO4
-#define SD_MISO 10 // GPIO5
-#define SD_MOSI 11 // GPIO6
-#define SD_CLK 12  // GPIO7
+constexpr uint8_t SD_CS = 9;    // GPIO4
+constexpr uint8_t SD_MISO = 10; // GPIO5
+constexpr uint8_t SD_MOSI = 11; // GPIO6
+constexpr uint8_t SD_CLK = 12;  // GPIO7
 
 /*UART 1 for BMS comms*/
-#define BMS_TX 23 // GPIO17
-#define BMS_RX 24 // GPIO18
+constexpr uint8_t JIKONG_TX = 23; // GPIO17
+constexpr uint8_t JIKONG_RX = 24; // GPIO18
 
 /*SPI pins for TFT screen uses SPI3 which must be routed via GPIO matrix, meaning they can be assigned to pretty much any  unused pins*/ // TODO: learn how to and implement this matrix stuff
 // values are placeholders
-#define TFT_RST 38  // GPIO33
-#define TFT_MOSI 39 // GPIO34
-#define TFT_DC 40   // GPIO35
-#define TFT_SCLK 41 // GPIO36
-#define TFT_CS 42   // GPIO37
+constexpr uint8_t TFT_RST = 38;  // GPIO33
+constexpr uint8_t TFT_MOSI = 39; // GPIO34
+constexpr uint8_t TFT_DC = 40;   // GPIO35
+constexpr uint8_t TFT_SCLK = 41; // GPIO36
+constexpr uint8_t TFT_CS = 42;   // GPIO37
 
 /* ======= Interrupt Flags ======= */
 volatile bool screenUpdateFlag = false;
@@ -51,7 +53,7 @@ struct BMSDataStruct
   double cellVoltages[12]; // convert to [2][6] for 2 batteries?
   double currentDraw;      // per battery?
   double totalVoltage;
-  bool errorFlag;
+  String error = ""; // TODO: change to string array so the warnings can be listed off
 };
 
 /* Each colour is enumerated by a 3-bit value where each bit marks whether
@@ -94,7 +96,7 @@ void setup()
 #if DEBUG_ENABLED
   Serial.begin(115200);
 #endif
-  Serial2.begin(115200, /*TODO: figure out what to put here*/, BMS_RX, BMS_TX);
+  Serial2.begin(115200, SERIAL_8N1, JIKONG_RX, JIKONG_TX);
   // test precharge connection
   // test ethernet connection
   // test ROS2 connection
@@ -126,7 +128,7 @@ void loop()
   if (getDataFlag)
   {
     BMSData = getBMSData();
-    if (BMSData.errorFlag)
+    if (BMSData.error != "")
     {
       noInterrupts();
 #if DISABLE_DISCHARGE_ON_ERROR
@@ -135,7 +137,7 @@ void loop()
       tft.setCursor(screenHeight / 2, 0);
       tft.setTextColor(ST7735_RED);
       tft.setTextSize(3);
-      tft.println("BMS Error Detected");
+      tft.println("BMS Error Detected"); // TODO: change to list off errors
       interrupts();
     }
   }
@@ -143,7 +145,7 @@ void loop()
   { // update flag driven by a hardware clock
     refreshDisplay();
 #if DEBUG_ENABLED
-    Serial.print(
+    Serial.print( // print data to serial
         "Battery Life is: " + String(BMSData.batteryLife) + "; " +
         "MOS Status is: " + String(BMSData.MOSStatus) + "; " +
         "Pack Temperature is: " + String(BMSData.packTemp) + "; " +
@@ -178,18 +180,26 @@ void refreshDisplay()
   tft.setTextSize(1);
   if (LastBMSData.totalVoltage != BMSData.totalVoltage)
   {
+    tft.setCursor(2, 2);
+    tft.println("Total Voltage: " + String(BMSData.totalVoltage) + "mV");
   }
   if (LastBMSData.packTemp != BMSData.packTemp)
   {
+    // TODO: check temp range and change text colour to match
+    tft.setCursor(screenWidth / 3, 2);
+    tft.println("Pack Temp: " + String(BMSData.packTemp) + "°C");
+    tft.setTextColor(ST7735_WHITE, ST7735_BLACK); // reset text colour
   }
   if (LastBMSData.currentDraw != BMSData.currentDraw)
   {
+    tft.setCursor(screenWidth * 2 / 3, 2);
+    tft.println("Current Draw: " + String(BMSData.currentDraw) + "A");
   }
   if (LastBMSData.MOSStatus != BMSData.MOSStatus)
   {
     tft.setCursor(screenWidth / 3 + 2, screenHeight / 2 + 2);
-    tft.println("Charge is " + BMSData.MOSStatus[0] ? "Disabled" : "Enabled");
-    tft.println("Discharge is " + BMSData.MOSStatus[1] ? "Disabled" : "Enabled");
+    tft.println("MOS Charge is " + BMSData.MOSStatus[0] ? "Disabled" : "Enabled");
+    tft.println("MOS Discharge is " + BMSData.MOSStatus[1] ? "Disabled" : "Enabled");
   }
   if (LastBMSData.cellVoltages != BMSData.cellVoltages)
   {
