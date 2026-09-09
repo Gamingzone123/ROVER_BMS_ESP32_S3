@@ -5,6 +5,9 @@
 #include <SPI.h>             // SPI 0 and 1 are used by the board itself, SPI 2 is used for the ethernet, must use eth 3 for tft screen
 #include <ArduinoJson.h>
 #include <stdint.h>
+#include <Jikong_Handler.h>
+#include <Pre_charge.h>
+// let GC & automation worry about MicroROS
 
 /* ======= Compiler Switches ======= */
 #define DEBUG_ENABLED 0              // compiler switch for debugging with a PC
@@ -40,20 +43,26 @@ constexpr uint8_t TFT_SCLK = 41; // GPIO36
 constexpr uint8_t TFT_CS = 42;   // GPIO37
 
 /* ======= Interrupt Flags ======= */
-volatile bool screenUpdateFlag = false;
+volatile bool screenUpdateFlag = true;
 volatile bool getDataFlag = false;
 
-/* ======= Structs, Enums & Type Defs*/
+/* ======= Globals ======= */
+
+uint16_t BMS_COMMS_TIMEOUT_ms = 1000;
+constexpr uint8_t numCells = 12;
+constexpr uint8_t cellsPBattery = 6;
+constexpr uint8_t numBatteries = 2;
+JikongMessenger JKMessenger(&Serial2, BMS_COMMS_TIMEOUT_ms, numCells);
 
 struct BMSDataStruct
 {
-  u_int32_t batteryLife;
-  bool MOSStatus[2];       // {charge, discharge} both 0 or 1
-  double packTemp;         // is this per battery, there are 2?
-  double cellVoltages[12]; // convert to [2][6] for 2 batteries?
-  double currentDraw;      // per battery?
-  double totalVoltage;
-  String error = ""; // TODO: change to string array so the warnings can be listed off
+  uint8_t batteryLife = 50;
+  bool MOSStatus[2] = {0, 0};                                             // {charge, discharge} both 0 or 1
+  int16_t packTemp = {25};                                                // is this per battery, there are 2?
+  uint32_t cellVoltages[numCells] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}; // convert to [2][6] for 2 batteries?
+  uint16_t currentDraw = {20};
+  uint16_t totalVoltage = {12};
+  const char *error = ""; // TODO: change to string array so the warnings can be listed off
 };
 
 /* Each colour is enumerated by a 3-bit value where each bit marks whether
@@ -79,15 +88,20 @@ enum LEDStripColourEnum
   YELLOW_LOCKED_INOPERABLE = 0b110,
   WHITE_SAFE_INTERACT = 0b111
 };
-
-/* ======= Globals ======= */
+// PreCharge PreCharger();
 
 Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_MOSI, TFT_SCLK, TFT_RST);
-const uint8_t displayUpdateHz = 1;
-const uint8_t screenWidth;  // TODO: compute and assign a value based on tft.width() here
-const uint8_t screenHeight; // same with height
+constexpr uint8_t displayUpdateHz = 1;
+const uint16_t screenWidth = 320;  // TODO: compute and assign a value based on tft.width() here
+const uint16_t screenHeight = 240; // same with height
 BMSDataStruct BMSData;
-BMSDataStruct LastBMSData;
+BMSDataStruct LastBMSData = {};
+
+/* ======= Declare Functions ======= */
+
+void getBMSData();
+void setLEDStripColour(LEDStripColourEnum colour);
+void refreshDisplay();
 
 /* ======= The Program =======*/
 
@@ -96,13 +110,14 @@ void setup()
 #if DEBUG_ENABLED
   Serial.begin(115200);
 #endif
-  Serial2.begin(115200, SERIAL_8N1, JIKONG_RX, JIKONG_TX);
-  // test precharge connection
-  // test ethernet connection
-  // test ROS2 connection
-  // test ATTiny connection(?)
+  // Serial2.begin(115200, SERIAL_8N1, JIKONG_RX, JIKONG_TX);
+  //  test precharge connection
+  //  test ethernet connection
+  //  test ROS2 connection
+  //  test ATTiny connection(?)
+  JKMessenger.begin(115200);
 #if DEBUG_ENABLED
-  if (!Serial2)
+  if (!JKMessenger.begin())
   {
     Serial.println("No BMS connection");
   }
@@ -125,21 +140,10 @@ void setup()
 
 void loop()
 {
+  LastBMSData = {};
   if (getDataFlag)
   {
-    BMSData = getBMSData();
-    if (BMSData.error != "")
-    {
-      noInterrupts();
-#if DISABLE_DISCHARGE_ON_ERROR
-      // disable discharge on precharge module
-#endif
-      tft.setCursor(screenHeight / 2, 0);
-      tft.setTextColor(ST7735_RED);
-      tft.setTextSize(3);
-      tft.println("BMS Error Detected"); // TODO: change to list off errors
-      interrupts();
-    }
+    // getBMSData();
   }
   if (screenUpdateFlag)
   { // update flag driven by a hardware clock
@@ -167,12 +171,44 @@ void loop()
 #endif
   }
   LastBMSData = BMSData;
-  // TODO: find a way to discard excess serial data from BMS
 }
 
-BMSDataStruct getBMSData()
+void getBMSData()
 {
   // TODO: link to BMS comms and assign values to struct
+  JKMessenger.request_data();
+  BMSData.batteryLife = JKMessenger.get_remaining_capacity_pct();
+  for (size_t i = 0; i < numCells; i++)
+  {
+    BMSData.cellVoltages[i] = JKMessenger.get_cell_voltage_mV()->cellVoltage;
+    // TODO: fix and iterate through retrieved values
+  }
+  BMSData.currentDraw = JKMessenger.get_current_dA();
+  BMSData.MOSStatus[0] = JKMessenger.get_status_flags()->charging_MOS_status;
+  BMSData.MOSStatus[1] = JKMessenger.get_status_flags()->discharge_MOS_status;
+  BMSData.packTemp = JKMessenger.get_battery_temp_dC();
+  BMSData.totalVoltage = JKMessenger.get_total_voltage_mV();
+  for (size_t i = 0; i < 13; i++)
+  {
+    BMSData.error = strcat(BMSData.error, JKMessenger.get_warning_flags()->); // iterate struct fields
+  }
+
+  // error checking
+  if (BMSData.error != "")
+  {
+    noInterrupts();
+#if DISABLE_DISCHARGE_ON_ERROR
+    JKMessenger.setMOS_state(false, false);
+#endif
+    tft.setCursor(screenHeight / 2, 0);
+    tft.setTextColor(ST7735_RED);
+    tft.setTextSize(3);
+    tft.println("BMS Error Detected: "); // TODO: change to list off errors
+    interrupts();
+  }
+  else
+  {
+  }
 }
 
 void refreshDisplay()
@@ -197,21 +233,27 @@ void refreshDisplay()
   }
   if (LastBMSData.MOSStatus != BMSData.MOSStatus)
   {
-    tft.setCursor(screenWidth / 3 + 2, screenHeight / 2 + 2);
+    tft.setCursor(2, screenHeight / 2 + 2);
     tft.println("MOS Charge is " + BMSData.MOSStatus[0] ? "Disabled" : "Enabled");
     tft.println("MOS Discharge is " + BMSData.MOSStatus[1] ? "Disabled" : "Enabled");
   }
   if (LastBMSData.cellVoltages != BMSData.cellVoltages)
   {
+    tft.setCursor(screenWidth / 3 + 2, screenHeight / 2 + 2);
+    // show cell voltages in two blocks of six values
+    // v v v    v v v
+    // v v v    v v v
   }
   if (LastBMSData.batteryLife != BMSData.batteryLife)
   {
+    tft.setCursor(screenWidth * 2 / 3 + 2, screenHeight / 2 + 2);
+    tft.println("Battery remaining: " + String(BMSData.batteryLife) + "%");
   }
 }
 
 void setLEDStripColour(LEDStripColourEnum colour)
 {
-  // set LEDstrip colour to colour value
+  // (tell ATTiny to?) set LEDstrip colour to colour value
 }
 
 // TODO: hardware timer interrupts for pulling data (?Hz) and refreshing the screen (1Hz)
