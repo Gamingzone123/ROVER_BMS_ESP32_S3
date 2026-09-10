@@ -11,7 +11,7 @@
 // let GC & automation worry about MicroROS
 
 /* ======= Compiler Switches ======= */
-#define DEBUG_ENABLED 0              // compiler switch for debugging with a PC
+#define DEBUG_ENABLED 1              // compiler switch for debugging with a PC
 #define NO_BMS 1                     // for testing without the BMS unit
 #define DISABLE_DISCHARGE_ON_ERROR 0 // whether to disable rover power on BMS error
 
@@ -105,6 +105,8 @@ BMSDataStruct LastBMSData;
 void getBMSData();
 void setLEDStripColour(LEDStripColourEnum colour);
 void refreshDisplay();
+void incrementPasscode();
+void checkPasscode();
 
 /* ======= The Program =======*/
 
@@ -119,12 +121,6 @@ void setup()
   //  test ROS2 connection
   //  test ATTiny connection(?)
   JKMessenger.begin(115200);
-#if DEBUG_ENABLED
-  if (!JKMessenger.begin())
-  {
-    Serial.println("No BMS connection");
-  }
-#endif
 
   setLEDStripColour(MAGENTA_STARTING_CONFLICT_ERROR);
 
@@ -168,7 +164,7 @@ void loop()
 #if DEBUG_ENABLED
     Serial.print( // print data to serial
         "Battery Life is: " + String(BMSData.batteryLife) + "; " +
-        "MOS Status is: " + String(BMSData.MOSStatus) + "; " +
+        "MOS Status is: " + String(BMSData.MOSStatus[0]) + ", " + String(BMSData.MOSStatus[1]) + "; " +
         "Pack Temperature is: " + String(BMSData.packTemp) + "; " +
         "Cell Voltages are: ");
     for (int i = 0; i < 12; i++)
@@ -183,8 +179,8 @@ void loop()
         "Respectively; "
         "Current Draw is " +
         String(BMSData.currentDraw) + "; " +
-        "Total Voltage is: " + String(BMSData.totalVoltage) + "; " +
-        "Error Flag is: " + String(BMSData.errorFlag) + "\n");
+        "Total Voltage is: " + String(BMSData.totalVoltage) +
+        "; Error is: " + BMSData.error.c_str() + "\n");
 #endif
   }
 }
@@ -194,32 +190,68 @@ void getBMSData()
   // TODO: link to BMS comms and assign values to struct
   JKMessenger.request_data();
   BMSData.batteryLife = JKMessenger.get_remaining_capacity_pct();
+  const JikongMessenger::Cell_Voltages *cellVoltages = JKMessenger.get_cell_voltage_mV();
   for (size_t i = 0; i < numCells; i++)
   {
-    BMSData.cellVoltages[i] = JKMessenger.get_cell_voltage_mV()->cellVoltage;
-    // TODO: fix and iterate through retrieved values
+    BMSData.cellVoltages[i] = cellVoltages[i].cellVoltage;
   }
   BMSData.currentDraw = JKMessenger.get_current_dA();
   BMSData.MOSStatus[0] = JKMessenger.get_status_flags()->charging_MOS_status;
   BMSData.MOSStatus[1] = JKMessenger.get_status_flags()->discharge_MOS_status;
   BMSData.packTemp = JKMessenger.get_battery_temp_dC();
   BMSData.totalVoltage = JKMessenger.get_total_voltage_mV();
-  for (size_t i = 0; i < 13; i++)
+
+  const auto *warningFlags = JKMessenger.get_warning_flags();
+  BMSData.error.clear();
+
+  // map values to labels
+  struct WarningEntry
   {
-    //  BMSData.error = strcat(BMSData.error, JKMessenger.get_warning_flags()->); // iterate struct fields
+    const char *label;
+    bool JikongMessenger::Warning_Flags::*member;
+  };
+
+  const WarningEntry warningEntries[] = {
+      {"Low capacity", &JikongMessenger::Warning_Flags::low_capacity},
+      {"MOS tube overtemp", &JikongMessenger::Warning_Flags::MOS_tube_OT},
+      {"Charging overvoltage", &JikongMessenger::Warning_Flags::charging_OV},
+      {"Discharge undervoltage", &JikongMessenger::Warning_Flags::discharge_UV},
+      {"Battery overtemp", &JikongMessenger::Warning_Flags::battery_OT},
+      {"Charging overcurrent", &JikongMessenger::Warning_Flags::charging_OC},
+      {"Discharge overcurrent", &JikongMessenger::Warning_Flags::discharge_OC},
+      {"Cell pressure differential", &JikongMessenger::Warning_Flags::Cell_pressure_differential},
+      {"Battery box overtemp", &JikongMessenger::Warning_Flags::BB_OT},
+      {"Battery low temp", &JikongMessenger::Warning_Flags::battery_low_temp},
+      {"Cell overvoltage", &JikongMessenger::Warning_Flags::monomer_OV},
+      {"Cell undervoltage", &JikongMessenger::Warning_Flags::monomer_UV},
+      {"Protection 309A", &JikongMessenger::Warning_Flags::protection_309A},
+  };
+
+  for (const auto &entry : warningEntries) // for entry in warningEntries
+  {
+    if (warningFlags && warningFlags->*entry.member)
+    {
+      if (!BMSData.error.empty())
+      {
+        BMSData.error += "; ";
+      }
+      BMSData.error += entry.label;
+    }
   }
 
   // error checking
   if (BMSData.error != "")
   {
     noInterrupts();
+    setLEDStripColour(RED_ERROR);
 #if DISABLE_DISCHARGE_ON_ERROR
     JKMessenger.setMOS_state(false, false);
 #endif
     tft.setCursor(screenHeight / 2, 0);
     tft.setTextColor(ILI9341_RED, ILI9341_BLACK);
     tft.setTextSize(3);
-    tft.println("BMS Error Detected: "); // TODO: change to list off errors
+    tft.setTextWrap(1);
+    tft.print("BMS Errors Detected: " + String(BMSData.error.c_str()) + "\n"); // list errors
     interrupts();
   }
   else
@@ -320,4 +352,5 @@ void setLEDStripColour(LEDStripColourEnum colour)
   // (tell ATTiny to?) set LEDstrip colour to colour value
 }
 
+// TODO: enable/disable with rotary encoder combo
 // TODO: hardware timer interrupts for pulling data (?Hz) and refreshing the screen (1Hz)
