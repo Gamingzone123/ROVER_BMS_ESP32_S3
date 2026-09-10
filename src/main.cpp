@@ -134,7 +134,6 @@ void setup()
   tft.fillScreen(ILI9341_BLACK);
   tft.setTextColor(ILI9341_WHITE, ILI9341_BLACK);
   tft.setTextSize(1);
-  tft.setTextWrap(1);
 
   // divide screen into 6 regions
   tft.drawFastHLine(0, screenHeight / 2, screenWidth, ILI9341_WHITE);
@@ -236,12 +235,17 @@ void refreshDisplay() // TODO: add colours to text where relevant
   constexpr uint16_t margin = 2;
 
   // '[&]' allows to access local vars
-  auto printSection = [&](const String &label, const String &value, uint16_t left, uint16_t top)
+  auto printSection = [&](const String &label, const String &value, uint16_t left, uint16_t top, uint16_t valueSize = 4, uint16_t valueColor = ILI9341_WHITE)
   {
+    tft.setTextColor(ILI9341_WHITE, ILI9341_BLACK);
     tft.setCursor(left + margin, top);
     tft.println(label);
+    tft.setTextSize(valueSize);
+    tft.setTextColor(valueColor, ILI9341_BLACK);
     tft.setCursor(left + margin, top + 10);
     tft.println(value);
+    tft.setTextSize(1);
+    tft.setTextColor(ILI9341_WHITE, ILI9341_BLACK);
   };
 
   tft.setTextSize(1);
@@ -260,8 +264,10 @@ void refreshDisplay() // TODO: add colours to text where relevant
   if (LastBMSData.MOSStatus[0] != BMSData.MOSStatus[0] ||
       LastBMSData.MOSStatus[1] != BMSData.MOSStatus[1])
   {
-    printSection("Charge MOS", BMSData.MOSStatus[0] ? "Enabled" : "Disabled", 0, rowHeight + 3);
-    printSection("Discharge MOS", BMSData.MOSStatus[1] ? "Enabled" : "Disabled", 0, rowHeight + 24 + 3);
+    printSection("Charge MOS", BMSData.MOSStatus[0] ? "Enabled" : "Disabled", 0, rowHeight + 3, 2,
+                 BMSData.MOSStatus[0] ? ILI9341_GREEN : ILI9341_RED);
+    printSection("Discharge MOS", BMSData.MOSStatus[1] ? "Enabled" : "Disabled", 0, rowHeight + 26 + 3, 2,
+                 BMSData.MOSStatus[1] ? ILI9341_GREEN : ILI9341_RED);
     tft.setTextColor(ILI9341_WHITE);
   }
   bool cellVoltagesChanged = false;
