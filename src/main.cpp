@@ -5,12 +5,14 @@
 #include <SPI.h>              // SPI 0 and 1 are used by the board itself, SPI 2 is used for the ethernet, must use eth 3 for tft screen
 #include <ArduinoJson.h>
 #include <stdint.h>
+#include <string>
 #include <Jikong_Handler.h>
 #include <Pre_charge.h>
 // let GC & automation worry about MicroROS
 
 /* ======= Compiler Switches ======= */
 #define DEBUG_ENABLED 0              // compiler switch for debugging with a PC
+#define NO_BMS 1                     // for testing without the BMS unit
 #define DISABLE_DISCHARGE_ON_ERROR 0 // whether to disable rover power on BMS error
 
 /* ======= Pin defs ======= */
@@ -48,7 +50,7 @@ volatile bool getDataFlag = false;
 
 /* ======= Globals ======= */
 
-uint16_t BMS_COMMS_TIMEOUT_ms = 1000;
+constexpr uint16_t BMS_COMMS_TIMEOUT_ms = 1000;
 constexpr uint8_t numCells = 12;
 constexpr uint8_t cellsPBattery = 6;
 constexpr uint8_t numBatteries = 2;
@@ -57,12 +59,12 @@ JikongMessenger JKMessenger(&Serial2, BMS_COMMS_TIMEOUT_ms, numCells);
 struct BMSDataStruct
 {
   uint8_t batteryLife = 50;
-  bool MOSStatus[2] = {0, 0};                                             // {charge, discharge} both 0 or 1
-  int16_t packTemp = {25};                                                // is this per battery, there are 2?
-  uint32_t cellVoltages[numCells] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}; // convert to [2][6] for 2 batteries?
-  uint16_t currentDraw = {20};
-  uint16_t totalVoltage = {12};
-  const char *error = ""; // TODO: change to string array so the warnings can be listed off
+  bool MOSStatus[2] = {0, 0}; // {charge, discharge} both 0 or 1
+  int16_t packTemp = 25;      // is this per battery, there are 2?
+  uint32_t cellVoltages[numCells] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+  uint16_t currentDraw = 0;
+  uint16_t totalVoltage = 12;
+  std::string error = ""; // append warning strings here as they are received
 };
 
 /* Each colour is enumerated by a 3-bit value where each bit marks whether
@@ -88,14 +90,15 @@ enum LEDStripColourEnum
   YELLOW_LOCKED_INOPERABLE = 0b110,
   WHITE_SAFE_INTERACT = 0b111
 };
-// PreCharge PreCharger();
+// PreCharge PreCharger(,);
 
 Adafruit_ILI9341 tft = Adafruit_ILI9341(TFT_CS, TFT_DC, TFT_MOSI, TFT_SCLK, TFT_RST);
+constexpr uint8_t getDataRate = 2; // Hz
 constexpr uint8_t displayUpdateHz = 1;
-uint16_t screenWidth;
-uint16_t screenHeight;
+const uint16_t screenWidth = tft.height(); // if rotation is odd, width and height swap
+const uint16_t screenHeight = tft.width();
 BMSDataStruct BMSData;
-BMSDataStruct LastBMSData = {};
+BMSDataStruct LastBMSData;
 
 /* ======= Declare Functions ======= */
 
@@ -128,21 +131,33 @@ void setup()
   // initialise TFT
   tft.begin();
   tft.setRotation(3);
-  screenWidth = tft.width();
-  screenHeight = tft.height();
   tft.fillScreen(ILI9341_BLACK);
   tft.setTextColor(ILI9341_WHITE, ILI9341_BLACK);
   tft.setTextSize(1);
+  tft.setTextWrap(1);
 
   // divide screen into 6 regions
   tft.drawFastHLine(0, screenHeight / 2, screenWidth, ILI9341_WHITE);
   tft.drawFastVLine(screenWidth / 3, 0, screenHeight, ILI9341_WHITE);
   tft.drawFastVLine(screenWidth * 2 / 3, 0, screenHeight, ILI9341_WHITE);
+
+#if NO_BMS
+  LastBMSData.batteryLife = 30;
+  LastBMSData.MOSStatus[0] = 1;
+  LastBMSData.MOSStatus[1] = 1;
+  LastBMSData.packTemp = 30;
+  for (size_t i = 0; i < 12; i++)
+  {
+    LastBMSData.cellVoltages[i] = 1;
+  }
+  LastBMSData.currentDraw = 1;
+  LastBMSData.totalVoltage = 10;
+  LastBMSData.error = "";
+#endif
 }
 
 void loop()
 {
-  LastBMSData = {};
   if (getDataFlag)
   {
     // getBMSData();
@@ -150,6 +165,7 @@ void loop()
   if (screenUpdateFlag)
   { // update flag driven by a hardware clock
     refreshDisplay();
+    LastBMSData = BMSData;
 #if DEBUG_ENABLED
     Serial.print( // print data to serial
         "Battery Life is: " + String(BMSData.batteryLife) + "; " +
@@ -172,7 +188,6 @@ void loop()
         "Error Flag is: " + String(BMSData.errorFlag) + "\n");
 #endif
   }
-  LastBMSData = BMSData;
 }
 
 void getBMSData()
@@ -203,7 +218,7 @@ void getBMSData()
     JKMessenger.setMOS_state(false, false);
 #endif
     tft.setCursor(screenHeight / 2, 0);
-    tft.setTextColor(ILI9341_RED);
+    tft.setTextColor(ILI9341_RED, ILI9341_BLACK);
     tft.setTextSize(3);
     tft.println("BMS Error Detected: "); // TODO: change to list off errors
     interrupts();
@@ -213,43 +228,84 @@ void getBMSData()
   }
 }
 
-void refreshDisplay()
+void refreshDisplay() // TODO: add colours to text where relevant
 {
+  // casts are defensive for the division, shouldnt come into play
+  const uint16_t columnWidth = static_cast<uint16_t>(screenWidth / 3);
+  const uint16_t rowHeight = static_cast<uint16_t>(screenHeight / 2);
+  constexpr uint16_t margin = 2;
+
+  // '[&]' allows to access local vars
+  auto printSection = [&](const String &label, const String &value, uint16_t left, uint16_t top)
+  {
+    tft.setCursor(left + margin, top);
+    tft.println(label);
+    tft.setCursor(left + margin, top + 10);
+    tft.println(value);
+  };
+
   tft.setTextSize(1);
   if (LastBMSData.totalVoltage != BMSData.totalVoltage)
   {
-    tft.setCursor(2, 2);
-    tft.println("Total Voltage: " + String(BMSData.totalVoltage) + "mV");
+    printSection("Total Voltage", String(BMSData.totalVoltage) + "mV", 0, 2);
   }
   if (LastBMSData.packTemp != BMSData.packTemp)
   {
-    // TODO: check temp range and change text colour to match
-    tft.setCursor(screenWidth / 3, 2);
-    tft.println("Pack Temp: " + String(BMSData.packTemp) + "°C");
-    tft.setTextColor(ILI9341_WHITE, ILI9341_BLACK); // reset text colour
+    printSection("Pack Temp", String(BMSData.packTemp) + "C", columnWidth + 1, 2);
   }
   if (LastBMSData.currentDraw != BMSData.currentDraw)
   {
-    tft.setCursor(screenWidth * 2 / 3, 2);
-    tft.println("Current Draw: " + String(BMSData.currentDraw) + "A");
+    printSection("Current Draw", String(BMSData.currentDraw) + "A", columnWidth * 2 + 2, 2);
   }
-  if (LastBMSData.MOSStatus != BMSData.MOSStatus)
+  if (LastBMSData.MOSStatus[0] != BMSData.MOSStatus[0] ||
+      LastBMSData.MOSStatus[1] != BMSData.MOSStatus[1])
   {
-    tft.setCursor(2, screenHeight / 2 + 2);
-    tft.println("MOS Charge is " + BMSData.MOSStatus[0] ? "Disabled" : "Enabled");
-    tft.println("MOS Discharge is " + BMSData.MOSStatus[1] ? "Disabled" : "Enabled");
+    printSection("Charge MOS", BMSData.MOSStatus[0] ? "Enabled" : "Disabled", 0, rowHeight + 3);
+    printSection("Discharge MOS", BMSData.MOSStatus[1] ? "Enabled" : "Disabled", 0, rowHeight + 24 + 3);
+    tft.setTextColor(ILI9341_WHITE);
   }
-  if (LastBMSData.cellVoltages != BMSData.cellVoltages)
+  bool cellVoltagesChanged = false;
+  for (size_t i = 0; i < numCells; i++)
   {
-    tft.setCursor(screenWidth / 3 + 2, screenHeight / 2 + 2);
-    // show cell voltages in two blocks of six values
-    // v v v    v v v
-    // v v v    v v v
+    if (LastBMSData.cellVoltages[i] != BMSData.cellVoltages[i])
+    {
+      cellVoltagesChanged = true;
+      break;
+    }
+  }
+  if (cellVoltagesChanged)
+  {
+    // these static casts stop the compiler yelling at me
+    const uint16_t cellX[cellsPBattery / 2] = {
+        static_cast<uint16_t>(columnWidth + 8),
+        static_cast<uint16_t>(columnWidth + 38),
+        static_cast<uint16_t>(columnWidth + 68)};
+    const uint16_t cellY[numBatteries][cellsPBattery / 3] = {
+        {static_cast<uint16_t>(rowHeight + 20), static_cast<uint16_t>(rowHeight + 32)},
+        {static_cast<uint16_t>(rowHeight + 76), static_cast<uint16_t>(rowHeight + 88)}};
+
+    tft.setCursor(columnWidth + 3, rowHeight + 3);
+    tft.println("Battery 1 mV/cell");
+    tft.setCursor(columnWidth + 3, rowHeight + 58 + 3);
+    tft.println("Battery 2 mV/cell");
+
+    for (size_t battery = 0; battery < numBatteries; battery++)
+    {
+      for (size_t row = 0; row < 2; row++)
+      {
+        for (size_t column = 0; column < 3; column++)
+        {
+          size_t index = battery * cellsPBattery + row * 3 + column;
+          tft.setCursor(cellX[column], cellY[battery][row]);
+          tft.print(BMSData.cellVoltages[index]);
+        }
+      }
+    }
+    tft.setTextColor(ILI9341_WHITE);
   }
   if (LastBMSData.batteryLife != BMSData.batteryLife)
   {
-    tft.setCursor(screenWidth * 2 / 3 + 2, screenHeight / 2 + 2);
-    tft.println("Battery remaining: " + String(BMSData.batteryLife) + "%");
+    printSection("Battery Life", String(BMSData.batteryLife) + "%", columnWidth * 2 + 2, rowHeight + 3);
   }
 }
 
