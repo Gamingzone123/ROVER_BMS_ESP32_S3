@@ -1,8 +1,8 @@
 /* ======= Includes ======= */
 #include <Arduino.h>
-#include <Adafruit_GFX.h>    // base adafruit graphic lib required by the tft
-#include <Adafruit_ST7735.h> // library for the tft
-#include <SPI.h>             // SPI 0 and 1 are used by the board itself, SPI 2 is used for the ethernet, must use eth 3 for tft screen
+#include <Adafruit_GFX.h>     // base adafruit graphic lib required by the tft
+#include <Adafruit_ILI9341.h> // library for the tft
+#include <SPI.h>              // SPI 0 and 1 are used by the board itself, SPI 2 is used for the ethernet, must use eth 3 for tft screen
 #include <ArduinoJson.h>
 #include <stdint.h>
 #include <Jikong_Handler.h>
@@ -90,10 +90,10 @@ enum LEDStripColourEnum
 };
 // PreCharge PreCharger();
 
-Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_MOSI, TFT_SCLK, TFT_RST);
+Adafruit_ILI9341 tft = Adafruit_ILI9341(TFT_CS, TFT_DC, TFT_MOSI, TFT_SCLK, TFT_RST);
 constexpr uint8_t displayUpdateHz = 1;
-const uint16_t screenWidth = 320;  // TODO: compute and assign a value based on tft.width() here
-const uint16_t screenHeight = 240; // same with height
+uint16_t screenWidth;
+uint16_t screenHeight;
 BMSDataStruct BMSData;
 BMSDataStruct LastBMSData = {};
 
@@ -126,16 +126,18 @@ void setup()
   setLEDStripColour(MAGENTA_STARTING_CONFLICT_ERROR);
 
   // initialise TFT
-  tft.initR(INITR_BLACKTAB);
-  tft.setRotation(3); // TODO: need to check if this is correct, can be changed to fit hardware orientation
-  tft.fillScreen(ST77XX_BLACK);
-  tft.setTextColor(ST7735_WHITE, ST7735_BLACK);
+  tft.begin();
+  tft.setRotation(3);
+  screenWidth = tft.width();
+  screenHeight = tft.height();
+  tft.fillScreen(ILI9341_BLACK);
+  tft.setTextColor(ILI9341_WHITE, ILI9341_BLACK);
   tft.setTextSize(1);
 
   // divide screen into 6 regions
-  tft.drawFastHLine(0, screenHeight / 2, screenWidth, ST7735_WHITE);
-  tft.drawFastVLine(screenWidth / 3, 0, screenHeight, ST7735_WHITE);
-  tft.drawFastVLine(screenWidth * 2 / 3, 0, screenHeight, ST7735_WHITE);
+  tft.drawFastHLine(0, screenHeight / 2, screenWidth, ILI9341_WHITE);
+  tft.drawFastVLine(screenWidth / 3, 0, screenHeight, ILI9341_WHITE);
+  tft.drawFastVLine(screenWidth * 2 / 3, 0, screenHeight, ILI9341_WHITE);
 }
 
 void loop()
@@ -190,7 +192,7 @@ void getBMSData()
   BMSData.totalVoltage = JKMessenger.get_total_voltage_mV();
   for (size_t i = 0; i < 13; i++)
   {
-    BMSData.error = strcat(BMSData.error, JKMessenger.get_warning_flags()->); // iterate struct fields
+    //  BMSData.error = strcat(BMSData.error, JKMessenger.get_warning_flags()->); // iterate struct fields
   }
 
   // error checking
@@ -201,7 +203,7 @@ void getBMSData()
     JKMessenger.setMOS_state(false, false);
 #endif
     tft.setCursor(screenHeight / 2, 0);
-    tft.setTextColor(ST7735_RED);
+    tft.setTextColor(ILI9341_RED);
     tft.setTextSize(3);
     tft.println("BMS Error Detected: "); // TODO: change to list off errors
     interrupts();
@@ -224,7 +226,7 @@ void refreshDisplay()
     // TODO: check temp range and change text colour to match
     tft.setCursor(screenWidth / 3, 2);
     tft.println("Pack Temp: " + String(BMSData.packTemp) + "°C");
-    tft.setTextColor(ST7735_WHITE, ST7735_BLACK); // reset text colour
+    tft.setTextColor(ILI9341_WHITE, ILI9341_BLACK); // reset text colour
   }
   if (LastBMSData.currentDraw != BMSData.currentDraw)
   {
