@@ -103,10 +103,15 @@ BMSDataStruct LastBMSData;
 /* ======= Declare Functions ======= */
 
 void getBMSData();
+void getVerboseBMS();
 void setLEDStripColour(LEDStripColourEnum colour);
 void refreshDisplay();
 void incrementPasscode();
 void checkPasscode();
+void killSwitch();
+void resetESP();
+void setMOSCharge(bool state);
+void setMOSDischarge(bool state);
 
 /* ======= The Program =======*/
 
