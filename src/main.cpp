@@ -36,6 +36,18 @@ constexpr uint8_t SD_CLK = 12;  // GPIO7
 constexpr uint8_t JIKONG_TX = 23; // GPIO17
 constexpr uint8_t JIKONG_RX = 24; // GPIO18
 
+/*IO Pins for comms with ATTiny85*/
+// TODO: decide on serial protocol for comms
+
+/*Pins for use with rotary encoder*/
+constexpr uint8_t KY040_CLK;
+constexpr uint8_t KY040_DT;
+constexpr uint8_t KY040_SW;
+
+/*Pins for comms with Precharge unit*/
+constexpr uint8_t PRECHARGE_CH_A = 25; // GPIO19
+constexpr uint8_t PRECHARGE_CH_B = 26; // GPIO20
+
 /*SPI pins for TFT screen uses SPI3 which must be routed via GPIO matrix, meaning they can be assigned to pretty much any  unused pins*/ // TODO: learn how to and implement this matrix stuff
 // values are placeholders
 constexpr uint8_t TFT_RST = 38;  // GPIO33
@@ -47,6 +59,7 @@ constexpr uint8_t TFT_CS = 42;   // GPIO37
 /* ======= Interrupt Flags ======= */
 volatile bool screenUpdateFlag = true;
 volatile bool getDataFlag = false;
+volatile bool killFlag = false;
 
 /* ======= Globals ======= */
 
@@ -55,6 +68,9 @@ constexpr uint8_t numCells = 12;
 constexpr uint8_t cellsPBattery = 6;
 constexpr uint8_t numBatteries = 2;
 JikongMessenger JKMessenger(&Serial2, BMS_COMMS_TIMEOUT_ms, numCells);
+
+constexpr EncoderStatesEnum *const MOSPassword[] = {0, 0, 0};
+constexpr uint8_t passLength = *(&MOSPassword + 1) - MOSPassword; // compute num elements in array
 
 struct BMSDataStruct
 {
@@ -90,7 +106,12 @@ enum LEDStripColourEnum
   YELLOW_LOCKED_INOPERABLE = 0b110,
   WHITE_SAFE_INTERACT = 0b111
 };
-// PreCharge PreCharger(,);
+
+enum EncoderStatesEnum
+{ // TODO: 20 states
+} lastEncoderState;
+
+PreCharge PreCharger(PRECHARGE_CH_A, PRECHARGE_CH_B);
 
 Adafruit_ILI9341 tft = Adafruit_ILI9341(TFT_CS, TFT_DC, TFT_MOSI, TFT_SCLK, TFT_RST);
 constexpr uint8_t getDataRate = 2; // Hz
@@ -106,12 +127,14 @@ void getBMSData();
 void getVerboseBMS();
 void setLEDStripColour(LEDStripColourEnum colour);
 void refreshDisplay();
-void incrementPasscode();
-void checkPasscode();
+void incrementPasscode(); // TODO
+void checkPasscode();     // TODO
 void killSwitch();
 void resetESP();
 void setMOSCharge(bool state);
 void setMOSDischarge(bool state);
+void configureUpdateTimer(); // TODO
+void encoderHandler();
 
 /* ======= The Program =======*/
 
@@ -154,13 +177,26 @@ void setup()
   LastBMSData.totalVoltage = 10;
   LastBMSData.error = "";
 #endif
+
+  lastEncoderState; // TODO: set state
 }
 
 void loop()
 {
+  if (killFlag)
+  {
+    killSwitch();
+  }
   if (getDataFlag)
   {
-    // getBMSData();
+#if (!NO_BMS)
+    getBMSData();
+#endif
+  }
+  EncoderStatesEnum encoderState; // TODO: figure out how to get the data from the encoder
+  if (encoderState != lastEncoderState)
+  {
+    encoderHandler();
   }
   if (screenUpdateFlag)
   { // update flag driven by a hardware clock
@@ -188,23 +224,12 @@ void loop()
         "; Error is: " + BMSData.error.c_str() + "\n");
 #endif
   }
+  lastEncoderState = encoderState;
 }
 
 void getBMSData()
 {
-  // TODO: link to BMS comms and assign values to struct
   JKMessenger.request_data();
-  BMSData.batteryLife = JKMessenger.get_remaining_capacity_pct();
-  const JikongMessenger::Cell_Voltages *cellVoltages = JKMessenger.get_cell_voltage_mV();
-  for (size_t i = 0; i < numCells; i++)
-  {
-    BMSData.cellVoltages[i] = cellVoltages[i].cellVoltage;
-  }
-  BMSData.currentDraw = JKMessenger.get_current_dA();
-  BMSData.MOSStatus[0] = JKMessenger.get_status_flags()->charging_MOS_status;
-  BMSData.MOSStatus[1] = JKMessenger.get_status_flags()->discharge_MOS_status;
-  BMSData.packTemp = JKMessenger.get_battery_temp_dC();
-  BMSData.totalVoltage = JKMessenger.get_total_voltage_mV();
 
   const auto *warningFlags = JKMessenger.get_warning_flags();
   BMSData.error.clear();
@@ -259,9 +284,90 @@ void getBMSData()
     tft.print("BMS Errors Detected: " + String(BMSData.error.c_str()) + "\n"); // list errors
     interrupts();
   }
-  else
+
+  BMSData.batteryLife = JKMessenger.get_remaining_capacity_pct();
+  const JikongMessenger::Cell_Voltages *cellVoltages = JKMessenger.get_cell_voltage_mV();
+  for (size_t i = 0; i < numCells; i++)
   {
+    BMSData.cellVoltages[i] = cellVoltages[i].cellVoltage;
   }
+  BMSData.currentDraw = JKMessenger.get_current_dA();
+  BMSData.MOSStatus[0] = JKMessenger.get_status_flags()->charging_MOS_status;
+  BMSData.MOSStatus[1] = JKMessenger.get_status_flags()->discharge_MOS_status;
+  BMSData.packTemp = JKMessenger.get_battery_temp_dC();
+  BMSData.totalVoltage = JKMessenger.get_total_voltage_mV();
+}
+
+void getVerboseBMS()
+{
+  // TODO: retrieve all getter values to some format for export (JSON string?)
+  JKMessenger.request_data();
+
+  const auto *warningFlags = JKMessenger.get_warning_flags();
+  BMSData.error.clear();
+
+  // map values to labels
+  struct WarningEntry
+  {
+    const char *label;
+    bool JikongMessenger::Warning_Flags::*member;
+  };
+
+  const WarningEntry warningEntries[] = {
+      {"Low capacity", &JikongMessenger::Warning_Flags::low_capacity},
+      {"MOS tube overtemp", &JikongMessenger::Warning_Flags::MOS_tube_OT},
+      {"Charging overvoltage", &JikongMessenger::Warning_Flags::charging_OV},
+      {"Discharge undervoltage", &JikongMessenger::Warning_Flags::discharge_UV},
+      {"Battery overtemp", &JikongMessenger::Warning_Flags::battery_OT},
+      {"Charging overcurrent", &JikongMessenger::Warning_Flags::charging_OC},
+      {"Discharge overcurrent", &JikongMessenger::Warning_Flags::discharge_OC},
+      {"Cell pressure differential", &JikongMessenger::Warning_Flags::Cell_pressure_differential},
+      {"Battery box overtemp", &JikongMessenger::Warning_Flags::BB_OT},
+      {"Battery low temp", &JikongMessenger::Warning_Flags::battery_low_temp},
+      {"Cell overvoltage", &JikongMessenger::Warning_Flags::monomer_OV},
+      {"Cell undervoltage", &JikongMessenger::Warning_Flags::monomer_UV},
+      {"Protection 309A", &JikongMessenger::Warning_Flags::protection_309A},
+  };
+
+  for (const auto &entry : warningEntries) // for entry in warningEntries
+  {
+    if (warningFlags && warningFlags->*entry.member)
+    {
+      if (!BMSData.error.empty())
+      {
+        BMSData.error += "; ";
+      }
+      BMSData.error += entry.label;
+    }
+  }
+
+  // error checking
+  if (BMSData.error != "")
+  {
+    noInterrupts();
+    setLEDStripColour(RED_ERROR);
+#if DISABLE_DISCHARGE_ON_ERROR
+    JKMessenger.setMOS_state(false, false);
+#endif
+    tft.setCursor(screenHeight / 2, 0);
+    tft.setTextColor(ILI9341_RED, ILI9341_BLACK);
+    tft.setTextSize(3);
+    tft.setTextWrap(1);
+    tft.print("BMS Errors Detected: " + String(BMSData.error.c_str()) + "\n"); // list errors
+    interrupts();
+  }
+
+  BMSData.batteryLife = JKMessenger.get_remaining_capacity_pct();
+  const JikongMessenger::Cell_Voltages *cellVoltages = JKMessenger.get_cell_voltage_mV();
+  for (size_t i = 0; i < numCells; i++)
+  {
+    BMSData.cellVoltages[i] = cellVoltages[i].cellVoltage;
+  }
+  BMSData.currentDraw = JKMessenger.get_current_dA();
+  BMSData.MOSStatus[0] = JKMessenger.get_status_flags()->charging_MOS_status;
+  BMSData.MOSStatus[1] = JKMessenger.get_status_flags()->discharge_MOS_status;
+  BMSData.packTemp = JKMessenger.get_battery_temp_dC();
+  BMSData.totalVoltage = JKMessenger.get_total_voltage_mV();
 }
 
 void refreshDisplay() // TODO: add colours to text where relevant
@@ -359,3 +465,47 @@ void setLEDStripColour(LEDStripColourEnum colour)
 
 // TODO: enable/disable with rotary encoder combo
 // TODO: hardware timer interrupts for pulling data (?Hz) and refreshing the screen (1Hz)
+
+void killSwitch()
+{
+  JKMessenger.setMOS_state(false, false);
+}
+
+void resetESP()
+{
+  ESP.restart();
+}
+
+void setMOSCharge(bool state)
+{
+  JKMessenger.request_data();
+  BMSData.MOSStatus[1] = JKMessenger.get_status_flags()->discharge_MOS_status;
+  JKMessenger.setMOS_state(state, BMSData.MOSStatus[1]);
+}
+
+void setMOSDischarge(bool state)
+{
+  JKMessenger.request_data();
+  BMSData.MOSStatus[0] = JKMessenger.get_status_flags()->charging_MOS_status;
+  JKMessenger.setMOS_state(BMSData.MOSStatus[0], state);
+}
+
+void encoderHandler()
+{
+  /* TODO: handle encoder input
+
+  desired flow:
+    - select mos mode to change by rotating dial(encoder) and stopping on desired setting for x duration
+      - set an enum flag for main display loop to read and highlight the currently selected MOS setting somehow
+    - clear screen, display current encoder position on screen numerically
+    - password input should function like like a physical lock with a dial
+      - lastEncoderState saves to current attempt buffer on direction change (or maybe stop for a duration or use encoder button?)
+      - last digit must be stopped on for y duration to be counted
+
+    - each encoder state change starts/resets a counter for a timeout if more than z seconds passes since last input
+    - all encoder inputs should be bidirectional
+    - if an additional input button is required the encoder can be pressed in for a signal on the SW pin
+      - encoder button is NOT debounced
+
+    check which direction turned, increment combo, when entered digits reaches pass length check password */
+}
