@@ -12,54 +12,63 @@
 // let GC & automation worry about MicroROS
 
 /* ======= Compiler Switches ======= */
-#define DEBUG_ENABLED 0              // compiler switch for debugging with a PC
-#define NO_BMS 0                     // for testing without the BMS unit
+#define DEBUG_ENABLED 1              // compiler switch for debugging with a PC
+#define NO_BMS 1                     // for testing without the BMS unit
 #define DISABLE_DISCHARGE_ON_ERROR 0 // whether to disable rover power on BMS error
 
 /* ======= Pin defs ======= */
 // Use constexpr instead of #define, more useful for modern C++ at compile time
-
+/*  Reserved / Do Not Use
+  GPIO0        BOOT button (strapping pin)
+  GPIO3        JTAG strap
+  GPIO19/20    USB D-/D+ (native USB)
+  GPIO21       Onboard RGB LED (RGB_DIN) — hardware trace
+  GPIO22-25    Not bonded out on this chip package
+  GPIO26-32    Internal Flash/PSRAM bus
+  GPIO43/44    UART0 TX/RX — reserved for flashing/serial monitor
+  GPIO45/46    Strapping pins (voltage select / boot mode)
+*/
 /*preset SPI pins for W5500 Ethernet are hardwired not changeable*/
-constexpr uint8_t W5500_RST = 14;  // GPIO9
-constexpr uint8_t W5500_INT = 15;  // GPIO10
-constexpr uint8_t W5500_MOSI = 16; // GPIO11
-constexpr uint8_t W5500_MISO = 17; // GPIO12
-constexpr uint8_t W5500_SCLK = 18; // GPIO13
-constexpr uint8_t W5500_CS = 19;   // GPIO14
+constexpr uint8_t W5500_RST = 9;
+constexpr uint8_t W5500_INT = 10;
+constexpr uint8_t W5500_MOSI = 11;
+constexpr uint8_t W5500_MISO = 12;
+constexpr uint8_t W5500_SCLK = 13;
+constexpr uint8_t W5500_CS = 14;
 
-/*the SD card pins are also set in stone if it is in use*/
-constexpr uint8_t SD_CS = 9;    // GPIO4
-constexpr uint8_t SD_MISO = 10; // GPIO5
-constexpr uint8_t SD_MOSI = 11; // GPIO6
-constexpr uint8_t SD_CLK = 12;  // GPIO7
+/*the SD card pins are also set in stone*/
+constexpr uint8_t SD_CS = 4;
+constexpr uint8_t SD_MISO = 5;
+constexpr uint8_t SD_MOSI = 6;
+constexpr uint8_t SD_CLK = 7;
 
 /*UART 1 for BMS comms*/
-constexpr uint8_t JIKONG_TX = 23; // GPIO17
-constexpr uint8_t JIKONG_RX = 24; // GPIO18
+constexpr uint8_t JIKONG_TX = 17;
+constexpr uint8_t JIKONG_RX = 18;
 
 /*IO Pins for comms with ATTiny85*/
 // TODO:rename and assign pins when comms protocol is decided
 //      may need to route pins via GPIO matrix
-// constexpr uint8_t ATTINY_1;
-// constexpr uint8_t ATTINY_2;
+constexpr uint8_t ATTINY_1 = 34;
+constexpr uint8_t ATTINY_2 = 35;
 
 /*Pins for use with rotary encoder*/
-constexpr uint8_t KY040_CLK = 13; // GPIO8
-constexpr uint8_t KY040_DT = 27;  // GPIO21
-constexpr uint8_t KY040_SW = 43;  // GPIO 38
+constexpr uint8_t KY040_CLK = 1;
+constexpr uint8_t KY040_DT = 16;
+constexpr uint8_t KY040_SW = 33;
 
 /*DEPRECATED Pins for comms with Precharge unit
 constexpr uint8_t PRECHARGE_CH_A = 25; // GPIO19
 constexpr uint8_t PRECHARGE_CH_B = 26; // GPIO20*/
 
-/*SPI pins for TFT screen uses SPI3 which must be routed via GPIO matrix, meaning they can be assigned to pretty much any  unused pins*/
-// TODO: learn how to and implement this matrix stuff, does it even need to be matrixed? will it clash with SPI0/1 in current state?
-// values are placeholders?
-constexpr uint8_t TFT_RST = 38;  // GPIO33
-constexpr uint8_t TFT_MOSI = 39; // GPIO34
-constexpr uint8_t TFT_DC = 40;   // GPIO35
-constexpr uint8_t TFT_SCLK = 41; // GPIO36
-constexpr uint8_t TFT_CS = 42;   // GPIO37
+/*SPI pins for TFT screen uses SPI3 via GPIO Matrix*/
+constexpr uint8_t TFT_RST = 38;
+constexpr uint8_t TFT_MOSI = 39;
+constexpr uint8_t TFT_DC = 40;
+constexpr uint8_t TFT_SCLK = 41;
+constexpr uint8_t TFT_CS = 42;
+
+// Free / Spare: GPIO pins 2, 8, 15, 36, 37, 47, 48
 
 /* ======= Interrupt Flags ======= */
 volatile bool screenUpdateFlag = false;
@@ -194,9 +203,9 @@ void setup()
   LastBMSData.error = "";
 #endif
 
-  pinMode(KY040_CLK, INPUT_PULLUP);
-  pinMode(KY040_DT, INPUT_PULLUP);
-  pinMode(KY040_SW, INPUT_PULLUP);
+  // pinMode(KY040_CLK, INPUT_PULLUP);
+  // pinMode(KY040_DT, INPUT_PULLUP);
+  // pinMode(KY040_SW, INPUT_PULLUP);
 
   configureHWTimers();
 }
