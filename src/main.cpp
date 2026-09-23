@@ -3,16 +3,17 @@
 #include <Adafruit_GFX.h>     // base adafruit graphic lib required by the tft
 #include <Adafruit_ILI9341.h> // library for the tft
 #include <SPI.h>              // SPI 0 and 1 are used by the board itself, SPI 2 is used for the ethernet, must use eth 3 for tft screen
+// May need an I2C library here
 #include <ArduinoJson.h>
 #include <stdint.h>
 #include <string>
 #include <Jikong_Handler.h>
-#include <Pre_charge.h>
+#include <Pre_charge.h> // removeable?
 // let GC & automation worry about MicroROS
 
 /* ======= Compiler Switches ======= */
-#define DEBUG_ENABLED 1              // compiler switch for debugging with a PC
-#define NO_BMS 1                     // for testing without the BMS unit
+#define DEBUG_ENABLED 0              // compiler switch for debugging with a PC
+#define NO_BMS 0                     // for testing without the BMS unit
 #define DISABLE_DISCHARGE_ON_ERROR 0 // whether to disable rover power on BMS error
 
 /* ======= Pin defs ======= */
@@ -37,19 +38,23 @@ constexpr uint8_t JIKONG_TX = 23; // GPIO17
 constexpr uint8_t JIKONG_RX = 24; // GPIO18
 
 /*IO Pins for comms with ATTiny85*/
-// TODO: decide on serial protocol for comms
+// TODO:rename and assign pins when comms protocol is decided
+//      may need to route pins via GPIO matrix
+// constexpr uint8_t ATTINY_1;
+// constexpr uint8_t ATTINY_2;
 
 /*Pins for use with rotary encoder*/
-constexpr uint8_t KY040_CLK;
-constexpr uint8_t KY040_DT;
-constexpr uint8_t KY040_SW;
+constexpr uint8_t KY040_CLK = 13; // GPIO8
+constexpr uint8_t KY040_DT = 27;  // GPIO21
+constexpr uint8_t KY040_SW = 43;  // GPIO 38
 
-/*Pins for comms with Precharge unit*/
+/*DEPRECATED Pins for comms with Precharge unit
 constexpr uint8_t PRECHARGE_CH_A = 25; // GPIO19
-constexpr uint8_t PRECHARGE_CH_B = 26; // GPIO20
+constexpr uint8_t PRECHARGE_CH_B = 26; // GPIO20*/
 
-/*SPI pins for TFT screen uses SPI3 which must be routed via GPIO matrix, meaning they can be assigned to pretty much any  unused pins*/ // TODO: learn how to and implement this matrix stuff
-// values are placeholders
+/*SPI pins for TFT screen uses SPI3 which must be routed via GPIO matrix, meaning they can be assigned to pretty much any  unused pins*/
+// TODO: learn how to and implement this matrix stuff, does it even need to be matrixed? will it clash with SPI0/1 in current state?
+// values are placeholders?
 constexpr uint8_t TFT_RST = 38;  // GPIO33
 constexpr uint8_t TFT_MOSI = 39; // GPIO34
 constexpr uint8_t TFT_DC = 40;   // GPIO35
@@ -57,11 +62,15 @@ constexpr uint8_t TFT_SCLK = 41; // GPIO36
 constexpr uint8_t TFT_CS = 42;   // GPIO37
 
 /* ======= Interrupt Flags ======= */
-volatile bool screenUpdateFlag = true;
+volatile bool screenUpdateFlag = false;
 volatile bool getDataFlag = false;
 volatile bool killFlag = false;
+// TODO: interrupt on encoder state change
 
 /* ======= Globals ======= */
+
+hw_timer_t *dataTimer = NULL;
+hw_timer_t *screenTimer = NULL;
 
 constexpr uint16_t BMS_COMMS_TIMEOUT_ms = 1000;
 constexpr uint8_t numCells = 12;
@@ -69,8 +78,11 @@ constexpr uint8_t cellsPBattery = 6;
 constexpr uint8_t numBatteries = 2;
 JikongMessenger JKMessenger(&Serial2, BMS_COMMS_TIMEOUT_ms, numCells);
 
-constexpr EncoderStatesEnum *const MOSPassword[] = {0, 0, 0};
-constexpr uint8_t passLength = *(&MOSPassword + 1) - MOSPassword; // compute num elements in array
+constexpr uint8_t MOSPassword[] = {0, 0, 0};
+constexpr uint8_t passLength = sizeof(MOSPassword) / sizeof(MOSPassword[0]); // compute num elements in array
+constexpr uint8_t passcodeAttempt[3] = {};
+constexpr uint32_t ENCODER_DIGIT_DWELL_ms = 1000;
+constexpr uint32_t ENCODER_ATTEMPT_TIMEOUT_ms = 5000;
 
 struct BMSDataStruct
 {
@@ -108,18 +120,19 @@ enum LEDStripColourEnum
 };
 
 enum EncoderStatesEnum
-{ // TODO: 20 states
-} lastEncoderState;
-
-PreCharge PreCharger(PRECHARGE_CH_A, PRECHARGE_CH_B);
+{ // TODO: encoder has 20 valid states, need to represent them
+};
+/*DEPRECATED
+PreCharge PreCharger(PRECHARGE_CH_A, PRECHARGE_CH_B);*/
 
 Adafruit_ILI9341 tft = Adafruit_ILI9341(TFT_CS, TFT_DC, TFT_MOSI, TFT_SCLK, TFT_RST);
-constexpr uint8_t getDataRate = 2; // Hz
-constexpr uint8_t displayUpdateHz = 1;
+constexpr uint8_t GET_DATA_RATE_HZ = 2; // Hz
+constexpr uint8_t DISPLAY_UPDATE_HZ = 1;
 const uint16_t screenWidth = tft.height(); // if rotation is odd, width and height swap
 const uint16_t screenHeight = tft.width();
 BMSDataStruct BMSData;
 BMSDataStruct LastBMSData;
+uint8_t lastEncoderState = -1;
 
 /* ======= Declare Functions ======= */
 
@@ -133,8 +146,10 @@ void killSwitch();
 void resetESP();
 void setMOSCharge(bool state);
 void setMOSDischarge(bool state);
-void configureUpdateTimer(); // TODO
 void encoderHandler();
+void configureHWTimers(int dataRate = GET_DATA_RATE_HZ, int screenUpdateRate = DISPLAY_UPDATE_HZ);
+void Data_timer_ISR();
+void Screen_timer_ISR();
 
 /* ======= The Program =======*/
 
@@ -143,8 +158,9 @@ void setup()
 #if DEBUG_ENABLED
   Serial.begin(115200);
 #endif
-  // Serial2.begin(115200, SERIAL_8N1, JIKONG_RX, JIKONG_TX);
-  //  test precharge connection
+#if !NO_BMS
+  Serial2.begin(115200, SERIAL_8N1, JIKONG_RX, JIKONG_TX);
+#endif
   //  test ethernet connection
   //  test ROS2 connection
   //  test ATTiny connection(?)
@@ -178,7 +194,11 @@ void setup()
   LastBMSData.error = "";
 #endif
 
-  lastEncoderState; // TODO: set state
+  pinMode(KY040_CLK, INPUT_PULLUP);
+  pinMode(KY040_DT, INPUT_PULLUP);
+  pinMode(KY040_SW, INPUT_PULLUP);
+
+  configureHWTimers();
 }
 
 void loop()
@@ -192,8 +212,9 @@ void loop()
 #if (!NO_BMS)
     getBMSData();
 #endif
+    getDataFlag = false;
   }
-  EncoderStatesEnum encoderState; // TODO: figure out how to get the data from the encoder
+  static uint8_t encoderState; // TODO: figure out how to get the data from the encoder (interrupt?)
   if (encoderState != lastEncoderState)
   {
     encoderHandler();
@@ -223,6 +244,7 @@ void loop()
         "Total Voltage is: " + String(BMSData.totalVoltage) +
         "; Error is: " + BMSData.error.c_str() + "\n");
 #endif
+    screenUpdateFlag = false;
   }
   lastEncoderState = encoderState;
 }
@@ -464,7 +486,6 @@ void setLEDStripColour(LEDStripColourEnum colour)
 }
 
 // TODO: enable/disable with rotary encoder combo
-// TODO: hardware timer interrupts for pulling data (?Hz) and refreshing the screen (1Hz)
 
 void killSwitch()
 {
@@ -500,7 +521,7 @@ void encoderHandler()
     - clear screen, display current encoder position on screen numerically
     - password input should function like like a physical lock with a dial
       - lastEncoderState saves to current attempt buffer on direction change (or maybe stop for a duration or use encoder button?)
-      - last digit must be stopped on for y duration to be counted
+      - last digit must be stopped on for y duration for its entry to be confirmed
 
     - each encoder state change starts/resets a counter for a timeout if more than z seconds passes since last input
     - all encoder inputs should be bidirectional
@@ -508,4 +529,42 @@ void encoderHandler()
       - encoder button is NOT debounced
 
     check which direction turned, increment combo, when entered digits reaches pass length check password */
+}
+
+void configureHWTimers(int dataRate, int screenUpdateRate)
+{
+
+  /* The default APB clock is 80 MHz. Dividing by the prescaler gives a 1 MHz
+   timer clock, so each tick is 1 µs. The period between triggers is
+   1 / dataRate seconds, which is converted to timer ticks by multiplying by
+   1,000,000. Use floating-point division here so a 2 Hz timer does not get
+   truncated to zero ticks. */
+
+  const uint32_t dataPeriodUs = static_cast<uint32_t>(1000000ULL / dataRate);
+  const uint32_t screenPeriodUs = static_cast<uint32_t>(1000000ULL / screenUpdateRate);
+
+  /* Data polling timer */
+  // create timer
+  dataTimer = timerBegin(0, 80, true); // timer 0, prescaler of 80, counting up
+  // attach interrupt
+  timerAttachInterrupt(dataTimer, &Data_timer_ISR, true);
+  // set alarm(interrupt) to trigger on an interval
+  timerAlarmWrite(dataTimer, dataPeriodUs, true);
+  timerAlarmEnable(dataTimer);
+
+  /* Screen update timer */
+  screenTimer = timerBegin(1, 80, true); // timer 1
+  timerAttachInterrupt(screenTimer, &Screen_timer_ISR, true);
+  timerAlarmWrite(screenTimer, screenPeriodUs, true);
+  timerAlarmEnable(screenTimer);
+}
+
+void IRAM_ATTR Data_timer_ISR()
+{
+  getDataFlag = true;
+}
+
+void IRAM_ATTR Screen_timer_ISR()
+{
+  screenUpdateFlag = true;
 }
