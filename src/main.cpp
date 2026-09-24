@@ -53,9 +53,9 @@ constexpr uint8_t ATTINY_1 = 34;
 constexpr uint8_t ATTINY_2 = 35;
 
 /*Pins for use with rotary encoder*/
-constexpr uint8_t KY040_CLK = 1;
-constexpr uint8_t KY040_DT = 16;
-constexpr uint8_t KY040_SW = 36;
+constexpr uint8_t KY040_CLK = 8;
+constexpr uint8_t KY040_DT = 15;
+constexpr uint8_t KY040_SW = 16;
 
 /*DEPRECATED Pins for comms with Precharge unit
 constexpr uint8_t PRECHARGE_CH_A = 25; // GPIO19
@@ -92,7 +92,7 @@ constexpr uint8_t passLength = sizeof(MOSPassword) / sizeof(MOSPassword[0]); // 
 uint8_t passcodeAttempt[passLength] = {};
 constexpr uint32_t ENCODER_DIGIT_DWELL_ms = 1000;
 constexpr uint32_t ENCODER_ATTEMPT_TIMEOUT_ms = 5000;
-volatile ulong lastEncoderChangems = 0;
+volatile ulong lastEncoderChangeus = 0;
 volatile bool encoderActive = false;
 
 struct BMSDataStruct
@@ -224,6 +224,13 @@ void setup()
 
 void loop()
 {
+  static uint8_t lastState = HIGH;
+  uint8_t state = digitalRead(KY040_CLK);
+  if (state != lastState)
+  {
+    Serial.printf("KY040_CLK changed: %d -> %d\n", lastState, state);
+    lastState = state;
+  }
   if (killFlag)
   {
     killSwitch();
@@ -237,6 +244,9 @@ void loop()
   }
   if (encoderFlag)
   {
+#if DEBUG_ENABLED
+    Serial.println("Encoder interrupt triggered");
+#endif
     encoderHandler();
   }
   if (screenUpdateFlag)
@@ -313,7 +323,6 @@ void getBMSData()
   // error checking
   if (BMSData.error != "")
   {
-    noInterrupts();
     setLEDStripColour(RED_ERROR);
 #if DISABLE_DISCHARGE_ON_ERROR
     JKMessenger.setMOS_state(false, false);
@@ -323,7 +332,6 @@ void getBMSData()
     tft.setTextSize(3);
     tft.setTextWrap(1);
     tft.print("BMS Errors Detected: " + String(BMSData.error.c_str()) + "\n"); // list errors
-    interrupts();
   }
 
   BMSData.batteryLife = JKMessenger.get_remaining_capacity_pct();
@@ -536,7 +544,14 @@ void setMOSDischarge(bool state)
 
 void encoderHandler()
 {
-  encoderState = encoderDirection ? encoderState-- % 20 : encoderState++ % 20; // encoder has 20 positions
+  if (encoderDirection) // encoder has 20 positions
+  {
+    encoderState = (encoderState - 1) % 19; // decrement, wrapping at 0
+  }
+  else
+  {
+    encoderState = (encoderState + 1) % 19;
+  }
 #if DEBUG_ENABLED
   Serial.println("Encoder Direction: " + String(encoderDirection ? "Anticlockwise" : " Clockwise"));
   Serial.println("Encoder State: " + String(encoderState));
@@ -557,6 +572,7 @@ void encoderHandler()
       - encoder button is NOT debounced
 
     check which direction turned, increment combo, when entered digits reaches pass length check password, and if correct, toggle selected MOS state */
+  encoderFlag = false;
 }
 
 void configureHWTimers(int dataRate, int screenUpdateRate)
@@ -604,7 +620,13 @@ void IRAM_ATTR screen_timer_ISR()
 void IRAM_ATTR encoder_CL_ISR()
 {
   encoderDirection = digitalRead(KY040_DT) ? CLOCKWISE : ANTICLOCKWISE; // if clockwise, CL pin will go low first, and visa versa
-  lastEncoderChangems = millis();
+
+  uint32_t now = micros();
+  // if (now - lastEncoderChangeus < 1500)
+  // {
+  //   return;
+  // }
+  lastEncoderChangeus = now;
   encoderActive = true;
   encoderFlag = true;
 }
