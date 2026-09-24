@@ -48,14 +48,14 @@ constexpr uint8_t JIKONG_RX = 18;
 
 /*IO Pins for comms with ATTiny85*/
 // TODO:rename and assign pins when comms protocol is decided
-//      may need to route pins via GPIO matrix
+//      if using I2C for comms, set SDA and SCL pins separately and add constant for I2C address
 constexpr uint8_t ATTINY_1 = 34;
 constexpr uint8_t ATTINY_2 = 35;
 
 /*Pins for use with rotary encoder*/
 constexpr uint8_t KY040_CLK = 1;
 constexpr uint8_t KY040_DT = 16;
-constexpr uint8_t KY040_SW = 33;
+constexpr uint8_t KY040_SW = 36;
 
 /*DEPRECATED Pins for comms with Precharge unit
 constexpr uint8_t PRECHARGE_CH_A = 25; // GPIO19
@@ -68,13 +68,13 @@ constexpr uint8_t TFT_DC = 40;
 constexpr uint8_t TFT_SCLK = 41;
 constexpr uint8_t TFT_CS = 42;
 
-// Free / Spare: GPIO pins 2, 8, 15, 36, 37, 47, 48
+// Free / Spare: GPIO pins 2, 8, 15, 33, 37, 47, 48
 
 /* ======= Interrupt Flags ======= */
 volatile bool screenUpdateFlag = false;
 volatile bool getDataFlag = false;
 volatile bool killFlag = false;
-// TODO: interrupt on encoder state change
+volatile bool encoderFlag = false;
 
 /* ======= Globals ======= */
 
@@ -89,9 +89,11 @@ JikongMessenger JKMessenger(&Serial2, BMS_COMMS_TIMEOUT_ms, numCells);
 
 constexpr uint8_t MOSPassword[] = {0, 0, 0};
 constexpr uint8_t passLength = sizeof(MOSPassword) / sizeof(MOSPassword[0]); // compute num elements in array
-constexpr uint8_t passcodeAttempt[3] = {};
+uint8_t passcodeAttempt[passLength] = {};
 constexpr uint32_t ENCODER_DIGIT_DWELL_ms = 1000;
 constexpr uint32_t ENCODER_ATTEMPT_TIMEOUT_ms = 5000;
+volatile ulong lastEncoderChangems = 0;
+volatile bool encoderActive = false;
 
 struct BMSDataStruct
 {
@@ -128,11 +130,16 @@ enum LEDStripColourEnum
   WHITE_SAFE_INTERACT = 0b111
 };
 
-enum EncoderStatesEnum
-{ // TODO: encoder has 20 valid states, need to represent them
-};
 /*DEPRECATED
 PreCharge PreCharger(PRECHARGE_CH_A, PRECHARGE_CH_B);*/
+
+enum EncoderDirectionsEnum
+{
+  CLOCKWISE,
+  ANTICLOCKWISE
+};
+
+volatile bool encoderDirection = -1;
 
 Adafruit_ILI9341 tft = Adafruit_ILI9341(TFT_CS, TFT_DC, TFT_MOSI, TFT_SCLK, TFT_RST);
 constexpr uint8_t GET_DATA_RATE_HZ = 2; // Hz
@@ -141,7 +148,8 @@ const uint16_t screenWidth = tft.height(); // if rotation is odd, width and heig
 const uint16_t screenHeight = tft.width();
 BMSDataStruct BMSData;
 BMSDataStruct LastBMSData;
-uint8_t lastEncoderState = -1;
+uint8_t encoderState = 0;
+bool MOSSwitchSelected = false;
 
 /* ======= Declare Functions ======= */
 
@@ -157,8 +165,10 @@ void setMOSCharge(bool state);
 void setMOSDischarge(bool state);
 void encoderHandler();
 void configureHWTimers(int dataRate = GET_DATA_RATE_HZ, int screenUpdateRate = DISPLAY_UPDATE_HZ);
-void Data_timer_ISR();
-void Screen_timer_ISR();
+void data_timer_ISR();
+void screen_timer_ISR();
+void encoder_CL_ISR();
+void encoder_timeout_ISR(); // TODO, needs to redraw the main display, clear code progress, MOSSwitchSelected, encoderActive etc.
 
 /* ======= The Program =======*/
 
@@ -170,7 +180,8 @@ void setup()
 #if !NO_BMS
   Serial2.begin(115200, SERIAL_8N1, JIKONG_RX, JIKONG_TX);
 #endif
-  //  test ethernet connection
+  //  test ethernet connection (but dont error yet)
+  //  delayed ethernet connection test as this board is upstream of it turning on
   //  test ROS2 connection
   //  test ATTiny connection(?)
   JKMessenger.begin(115200);
@@ -203,9 +214,10 @@ void setup()
   LastBMSData.error = "";
 #endif
 
-  // pinMode(KY040_CLK, INPUT_PULLUP);
-  // pinMode(KY040_DT, INPUT_PULLUP);
-  // pinMode(KY040_SW, INPUT_PULLUP);
+  pinMode(KY040_CLK, INPUT_PULLUP);
+  pinMode(KY040_DT, INPUT_PULLUP);
+  pinMode(KY040_SW, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(KY040_CLK), encoder_CL_ISR, FALLING);
 
   configureHWTimers();
 }
@@ -223,13 +235,12 @@ void loop()
 #endif
     getDataFlag = false;
   }
-  static uint8_t encoderState; // TODO: figure out how to get the data from the encoder (interrupt?)
-  if (encoderState != lastEncoderState)
+  if (encoderFlag)
   {
     encoderHandler();
   }
   if (screenUpdateFlag)
-  { // update flag driven by a hardware clock
+  {
     refreshDisplay();
     LastBMSData = BMSData;
 #if DEBUG_ENABLED
@@ -255,7 +266,6 @@ void loop()
 #endif
     screenUpdateFlag = false;
   }
-  lastEncoderState = encoderState;
 }
 
 void getBMSData()
@@ -403,95 +413,99 @@ void getVerboseBMS()
 
 void refreshDisplay() // TODO: add colours to text where relevant
 {
-  // casts are defensive for the division, shouldnt come into play
-  const uint16_t columnWidth = static_cast<uint16_t>(screenWidth / 3);
-  const uint16_t rowHeight = static_cast<uint16_t>(screenHeight / 2);
-  constexpr uint16_t margin = 2;
-
-  // '[&]' allows to access local vars
-  auto printSection = [&](const String &label, const String &value, uint16_t left, uint16_t top, uint16_t valueSize = 4, uint16_t valueColor = ILI9341_WHITE)
+  if (!MOSSwitchSelected)
   {
-    tft.setTextColor(ILI9341_WHITE, ILI9341_BLACK);
-    tft.setCursor(left + margin, top);
-    tft.println(label);
-    tft.setTextSize(valueSize);
-    tft.setTextColor(valueColor, ILI9341_BLACK);
-    tft.setCursor(left + margin, top + 10);
-    tft.println(value);
+
+    // casts are defensive for the division, shouldnt come into play
+    const uint16_t columnWidth = static_cast<uint16_t>(screenWidth / 3);
+    const uint16_t rowHeight = static_cast<uint16_t>(screenHeight / 2);
+    constexpr uint16_t margin = 2;
+
+    // '[&]' allows to access local vars
+    auto printSection = [&](const String &label, const String &value, uint16_t left, uint16_t top, uint16_t valueSize = 4, uint16_t valueColor = ILI9341_WHITE)
+    {
+      tft.setTextColor(ILI9341_WHITE, ILI9341_BLACK);
+      tft.setCursor(left + margin, top);
+      tft.println(label);
+      tft.setTextSize(valueSize);
+      tft.setTextColor(valueColor, ILI9341_BLACK);
+      tft.setCursor(left + margin, top + 10);
+      tft.println(value);
+      tft.setTextSize(1);
+      tft.setTextColor(ILI9341_WHITE, ILI9341_BLACK);
+    };
+
     tft.setTextSize(1);
-    tft.setTextColor(ILI9341_WHITE, ILI9341_BLACK);
-  };
-
-  tft.setTextSize(1);
-  if (LastBMSData.totalVoltage != BMSData.totalVoltage)
-  {
-    printSection("Total Voltage", String(BMSData.totalVoltage) + "mV", 0, 2);
-  }
-  if (LastBMSData.packTemp != BMSData.packTemp)
-  {
-    printSection("Pack Temp", String(BMSData.packTemp) + "C", columnWidth + 1, 2);
-  }
-  if (LastBMSData.currentDraw != BMSData.currentDraw)
-  {
-    printSection("Current Draw", String(BMSData.currentDraw) + "A", columnWidth * 2 + 2, 2);
-  }
-  if (LastBMSData.MOSStatus[0] != BMSData.MOSStatus[0] ||
-      LastBMSData.MOSStatus[1] != BMSData.MOSStatus[1])
-  {
-    printSection("Charge MOS", BMSData.MOSStatus[0] ? "Enabled" : "Disabled", 0, rowHeight + 3, 2,
-                 BMSData.MOSStatus[0] ? ILI9341_GREEN : ILI9341_RED);
-    printSection("Discharge MOS", BMSData.MOSStatus[1] ? "Enabled" : "Disabled", 0, rowHeight + 26 + 3, 2,
-                 BMSData.MOSStatus[1] ? ILI9341_GREEN : ILI9341_RED);
-    tft.setTextColor(ILI9341_WHITE);
-  }
-  bool cellVoltagesChanged = false;
-  for (size_t i = 0; i < numCells; i++)
-  {
-    if (LastBMSData.cellVoltages[i] != BMSData.cellVoltages[i])
+    if (LastBMSData.totalVoltage != BMSData.totalVoltage)
     {
-      cellVoltagesChanged = true;
-      break;
+      printSection("Total Voltage", String(BMSData.totalVoltage) + "mV", 0, 2);
     }
-  }
-  if (cellVoltagesChanged)
-  {
-    // these static casts stop the compiler yelling at me
-    const uint16_t cellX[cellsPBattery / 2] = {
-        static_cast<uint16_t>(columnWidth + 8),
-        static_cast<uint16_t>(columnWidth + 38),
-        static_cast<uint16_t>(columnWidth + 68)};
-    const uint16_t cellY[numBatteries][cellsPBattery / 3] = {
-        {static_cast<uint16_t>(rowHeight + 20), static_cast<uint16_t>(rowHeight + 32)},
-        {static_cast<uint16_t>(rowHeight + 76), static_cast<uint16_t>(rowHeight + 88)}};
-
-    tft.setCursor(columnWidth + 3, rowHeight + 3);
-    tft.println("Battery 1 mV/cell");
-    tft.setCursor(columnWidth + 3, rowHeight + 58 + 3);
-    tft.println("Battery 2 mV/cell");
-
-    for (size_t battery = 0; battery < numBatteries; battery++)
+    if (LastBMSData.packTemp != BMSData.packTemp)
     {
-      for (size_t row = 0; row < 2; row++)
+      printSection("Pack Temp", String(BMSData.packTemp) + "C", columnWidth + 1, 2);
+    }
+    if (LastBMSData.currentDraw != BMSData.currentDraw)
+    {
+      printSection("Current Draw", String(BMSData.currentDraw) + "A", columnWidth * 2 + 2, 2);
+    }
+    if (LastBMSData.MOSStatus[0] != BMSData.MOSStatus[0] ||
+        LastBMSData.MOSStatus[1] != BMSData.MOSStatus[1])
+    {
+      printSection("Charge MOS", BMSData.MOSStatus[0] ? "Enabled" : "Disabled", 0, rowHeight + 3, 2,
+                   BMSData.MOSStatus[0] ? ILI9341_GREEN : ILI9341_RED);
+      printSection("Discharge MOS", BMSData.MOSStatus[1] ? "Enabled" : "Disabled", 0, rowHeight + 26 + 3, 2,
+                   BMSData.MOSStatus[1] ? ILI9341_GREEN : ILI9341_RED);
+      tft.setTextColor(ILI9341_WHITE);
+    }
+    bool cellVoltagesChanged = false;
+    for (size_t i = 0; i < numCells; i++)
+    {
+      if (LastBMSData.cellVoltages[i] != BMSData.cellVoltages[i])
       {
-        for (size_t column = 0; column < 3; column++)
-        {
-          size_t index = battery * cellsPBattery + row * 3 + column;
-          tft.setCursor(cellX[column], cellY[battery][row]);
-          tft.print(BMSData.cellVoltages[index]);
-        }
+        cellVoltagesChanged = true;
+        break;
       }
     }
-    tft.setTextColor(ILI9341_WHITE);
-  }
-  if (LastBMSData.batteryLife != BMSData.batteryLife)
-  {
-    printSection("Battery Life", String(BMSData.batteryLife) + "%", columnWidth * 2 + 2, rowHeight + 3);
+    if (cellVoltagesChanged)
+    {
+      // these static casts stop the compiler yelling at me
+      const uint16_t cellX[cellsPBattery / 2] = {
+          static_cast<uint16_t>(columnWidth + 8),
+          static_cast<uint16_t>(columnWidth + 38),
+          static_cast<uint16_t>(columnWidth + 68)};
+      const uint16_t cellY[numBatteries][cellsPBattery / 3] = {
+          {static_cast<uint16_t>(rowHeight + 20), static_cast<uint16_t>(rowHeight + 32)},
+          {static_cast<uint16_t>(rowHeight + 76), static_cast<uint16_t>(rowHeight + 88)}};
+
+      tft.setCursor(columnWidth + 3, rowHeight + 3);
+      tft.println("Battery 1 mV/cell");
+      tft.setCursor(columnWidth + 3, rowHeight + 58 + 3);
+      tft.println("Battery 2 mV/cell");
+
+      for (size_t battery = 0; battery < numBatteries; battery++)
+      {
+        for (size_t row = 0; row < 2; row++)
+        {
+          for (size_t column = 0; column < 3; column++)
+          {
+            size_t index = battery * cellsPBattery + row * 3 + column;
+            tft.setCursor(cellX[column], cellY[battery][row]);
+            tft.print(BMSData.cellVoltages[index]);
+          }
+        }
+      }
+      tft.setTextColor(ILI9341_WHITE);
+    }
+    if (LastBMSData.batteryLife != BMSData.batteryLife)
+    {
+      printSection("Battery Life", String(BMSData.batteryLife) + "%", columnWidth * 2 + 2, rowHeight + 3);
+    }
   }
 }
 
 void setLEDStripColour(LEDStripColourEnum colour)
 {
-  // (tell ATTiny to?) set LEDstrip colour to colour value
+  // TODO: (tell ATTiny to?) set LEDstrip colour to colour value
 }
 
 // TODO: enable/disable with rotary encoder combo
@@ -522,22 +536,27 @@ void setMOSDischarge(bool state)
 
 void encoderHandler()
 {
-  /* TODO: handle encoder input
+  encoderState = encoderDirection ? encoderState-- % 20 : encoderState++ % 20; // encoder has 20 positions
+#if DEBUG_ENABLED
+  Serial.println("Encoder Direction: " + String(encoderDirection ? "Anticlockwise" : " Clockwise"));
+  Serial.println("Encoder State: " + String(encoderState));
+#endif
+  /* TODO: handle encoder logic
 
   desired flow:
     - select mos mode to change by rotating dial(encoder) and stopping on desired setting for x duration
       - set an enum flag for main display loop to read and highlight the currently selected MOS setting somehow
-    - clear screen, display current encoder position on screen numerically
+    - clear screen (once per MOSSwitchSelected true), display current encoder position on screen numerically in large size
     - password input should function like like a physical lock with a dial
-      - lastEncoderState saves to current attempt buffer on direction change (or maybe stop for a duration or use encoder button?)
-      - last digit must be stopped on for y duration for its entry to be confirmed
+      - encoderState saves to current attempt buffer on direction change (or maybe stop for a duration or use encoder button?)
+      - last digit must be stopped on for x duration for its entry to be confirmed
 
     - each encoder state change starts/resets a counter for a timeout if more than z seconds passes since last input
     - all encoder inputs should be bidirectional
     - if an additional input button is required the encoder can be pressed in for a signal on the SW pin
       - encoder button is NOT debounced
 
-    check which direction turned, increment combo, when entered digits reaches pass length check password */
+    check which direction turned, increment combo, when entered digits reaches pass length check password, and if correct, toggle selected MOS state */
 }
 
 void configureHWTimers(int dataRate, int screenUpdateRate)
@@ -555,25 +574,37 @@ void configureHWTimers(int dataRate, int screenUpdateRate)
   /* Data polling timer */
   // create timer
   dataTimer = timerBegin(0, 80, true); // timer 0, prescaler of 80, counting up
+
   // attach interrupt
-  timerAttachInterrupt(dataTimer, &Data_timer_ISR, true);
+  timerAttachInterrupt(dataTimer, &data_timer_ISR, true);
+
   // set alarm(interrupt) to trigger on an interval
   timerAlarmWrite(dataTimer, dataPeriodUs, true);
   timerAlarmEnable(dataTimer);
 
   /* Screen update timer */
   screenTimer = timerBegin(1, 80, true); // timer 1
-  timerAttachInterrupt(screenTimer, &Screen_timer_ISR, true);
+  timerAttachInterrupt(screenTimer, &screen_timer_ISR, true);
   timerAlarmWrite(screenTimer, screenPeriodUs, true);
   timerAlarmEnable(screenTimer);
+
+  // TODO: encoder timout timer - reset clock in encoder pin interrupt to keep from triggering
 }
 
-void IRAM_ATTR Data_timer_ISR()
+void IRAM_ATTR data_timer_ISR()
 {
   getDataFlag = true;
 }
 
-void IRAM_ATTR Screen_timer_ISR()
+void IRAM_ATTR screen_timer_ISR()
 {
   screenUpdateFlag = true;
+}
+
+void IRAM_ATTR encoder_CL_ISR()
+{
+  encoderDirection = digitalRead(KY040_DT) ? CLOCKWISE : ANTICLOCKWISE; // if clockwise, CL pin will go low first, and visa versa
+  lastEncoderChangems = millis();
+  encoderActive = true;
+  encoderFlag = true;
 }
