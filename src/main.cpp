@@ -576,6 +576,39 @@ void refreshDisplay() // TODO: add colours to text where relevant
   }
 }
 
+void drawPasscodeDigit()
+{
+  tft.fillScreen(ILI9341_BLACK);
+
+  // current encoder position so the user knows what they are entering
+  String posText = String(encoderState + 1);
+  int16_t x1, y1;
+  uint16_t textW, textH;
+  tft.setTextSize(8);
+  tft.setTextColor(ILI9341_CYAN, ILI9341_BLACK);
+  tft.getTextBounds(posText, 0, 0, &x1, &y1, &textW, &textH);
+  tft.setCursor((screenWidth - textW) / 2, screenHeight / 3);
+  tft.println(posText);
+
+  // Progress dots filled once that digit has been entered.
+  const uint16_t dotRadius = 8;
+  const uint16_t dotY = screenHeight - 30;
+  const uint16_t spacing = screenWidth / (passLength + 1);
+
+  for (uint8_t i = 0; i < passLength; i++)
+  {
+    uint16_t dotX = spacing * (i + 1);
+    if (i < passcodeIndex)
+    {
+      tft.fillCircle(dotX, dotY, dotRadius, ILI9341_WHITE);
+    }
+    else
+    {
+      tft.drawCircle(dotX, dotY, dotRadius, ILI9341_WHITE);
+    }
+  }
+}
+
 void setLEDStripColour(LEDStripColourEnum colour)
 {
   // TODO: (tell ATTiny to?) set LEDstrip colour to colour value
