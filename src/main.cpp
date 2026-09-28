@@ -141,6 +141,23 @@ enum EncoderDirectionsEnum
   ANTICLOCKWISE
 };
 
+enum EncoderModeEnum
+{
+  MODE_IDLE,
+  MODE_SELECT_MOS,
+  MODE_PASSCODE_ENTRY
+};
+volatile EncoderModeEnum encoderMode = MODE_IDLE;
+
+enum SelectedMOSEnum
+{
+  SEL_CHARGE,
+  SEL_DISCHARGE
+};
+SelectedMOSEnum selectedMOS = SEL_CHARGE;
+
+uint8_t passcodeIndex = 0;
+
 volatile bool encoderDirection = -1;
 
 Adafruit_ILI9341 tft = Adafruit_ILI9341(TFT_CS, TFT_DC, TFT_MOSI, TFT_SCLK, TFT_RST);
@@ -160,18 +177,20 @@ void getVerboseBMS();
 void setLEDStripColour(LEDStripColourEnum colour);
 void segmentDisplay();
 void refreshDisplay();
-void incrementPasscode(); // TODO
-void checkPasscode();     // TODO
+void drawPasscodeDigit();
+void incrementPasscode();
+void checkPasscode();
 void killSwitch();
 void resetESP();
 void setMOSCharge(bool state);
 void setMOSDischarge(bool state);
 void encoderHandler();
+void resetToIdle();
 void configureHWTimers(int dataRate = GET_DATA_RATE_HZ, int screenUpdateRate = DISPLAY_UPDATE_HZ);
 void data_timer_ISR();
 void screen_timer_ISR();
 void encoder_CL_ISR();
-void encoder_timeout_ISR(); // TODO, needs to redraw the main display, clear code progress, MOSSwitchSelected, encoderActive etc.
+void encoder_timeout_ISR();
 
 /* ======= The Program =======*/
 
@@ -241,23 +260,29 @@ void loop()
   if (encoderTimeoutFlag)
   {
     encoderTimeoutFlag = false;
-    timerAlarmDisable(encoderTimer); // stop it until the encoder is touched again
-
-    encoderActive = false;
-    MOSSwitchSelected = false;
-    encoderState = 0;
-    for (size_t i = 0; i < passLength; i++)
-    {
-      passcodeAttempt[i] = 0;
-    }
-
-    LastBMSData = BMSDataStruct(); // force refreshDisplay() to repaint every section
-    segmentDisplay();
-    screenUpdateFlag = true;
-
+    resetToIdle();
 #if DEBUG_ENABLED
     Serial.println("Encoder timed out — resetting to main display");
 #endif
+  }
+
+  /* Dwell-based confirmation: if the encoder has sat still for ENCODER_DIGIT_DWELL_ms while a selection/entry is in progress, treat the current value as confirmed.
+     Alternatives considered: confirm on direction reversal, or confirm via a press on the encoder's SW pin — dwell is used as the primary mechanism for now. */
+  if (encoderActive && (micros() - lastEncoderChangeus) >= (ENCODER_DIGIT_DWELL_ms * 1000UL))
+  {
+    if (encoderMode == MODE_SELECT_MOS)
+    {
+      MOSSwitchSelected = true;
+      encoderMode = MODE_PASSCODE_ENTRY;
+      passcodeIndex = 0;
+      encoderState = 0;
+      lastEncoderChangeus = micros(); // restart the dwell window for digit 1
+      drawPasscodeDigit();
+    }
+    else if (encoderMode == MODE_PASSCODE_ENTRY)
+    {
+      incrementPasscode();
+    }
   }
 
   if (getDataFlag)
@@ -463,9 +488,11 @@ void refreshDisplay() // TODO: add colours to text where relevant
     constexpr uint16_t margin = 2;
 
     // '[&]' allows to access local vars
-    auto printSection = [&](const String &label, const String &value, uint16_t left, uint16_t top, uint16_t valueSize = 4, uint16_t valueColor = ILI9341_WHITE)
+    auto printSection = [&](const String &label, const String &value, uint16_t left, uint16_t top,
+                            uint16_t valueSize = 4, uint16_t valueColor = ILI9341_WHITE,
+                            uint16_t labelColor = ILI9341_WHITE)
     {
-      tft.setTextColor(ILI9341_WHITE, ILI9341_BLACK);
+      tft.setTextColor(labelColor, ILI9341_BLACK);
       tft.setCursor(left + margin, top);
       tft.println(label);
       tft.setTextSize(valueSize);
@@ -489,13 +516,18 @@ void refreshDisplay() // TODO: add colours to text where relevant
     {
       printSection("Current Draw", String(BMSData.currentDraw) + "A", columnWidth * 2 + 2, 2);
     }
-    if (LastBMSData.MOSStatus[0] != BMSData.MOSStatus[0] ||
-        LastBMSData.MOSStatus[1] != BMSData.MOSStatus[1])
+    bool mosSectionNeedsRedraw = (LastBMSData.MOSStatus[0] != BMSData.MOSStatus[0]) ||
+                                 (LastBMSData.MOSStatus[1] != BMSData.MOSStatus[1]) ||
+                                 (encoderMode == MODE_SELECT_MOS);
+    if (mosSectionNeedsRedraw)
     {
+      uint16_t chargeLabelColor = (encoderMode == MODE_SELECT_MOS && selectedMOS == SEL_CHARGE) ? ILI9341_YELLOW : ILI9341_WHITE;
+      uint16_t dischargeLabelColor = (encoderMode == MODE_SELECT_MOS && selectedMOS == SEL_DISCHARGE) ? ILI9341_YELLOW : ILI9341_WHITE;
+
       printSection("Charge MOS", BMSData.MOSStatus[0] ? "Enabled" : "Disabled", 0, rowHeight + 3, 2,
-                   BMSData.MOSStatus[0] ? ILI9341_GREEN : ILI9341_RED);
+                   BMSData.MOSStatus[0] ? ILI9341_GREEN : ILI9341_RED, chargeLabelColor);
       printSection("Discharge MOS", BMSData.MOSStatus[1] ? "Enabled" : "Disabled", 0, rowHeight + 26 + 3, 2,
-                   BMSData.MOSStatus[1] ? ILI9341_GREEN : ILI9341_RED);
+                   BMSData.MOSStatus[1] ? ILI9341_GREEN : ILI9341_RED, dischargeLabelColor);
       tft.setTextColor(ILI9341_WHITE);
     }
     bool cellVoltagesChanged = false;
@@ -549,8 +581,6 @@ void setLEDStripColour(LEDStripColourEnum colour)
   // TODO: (tell ATTiny to?) set LEDstrip colour to colour value
 }
 
-// TODO: enable/disable with rotary encoder combo
-
 void killSwitch()
 {
   JKMessenger.setMOS_state(false, false);
@@ -577,35 +607,116 @@ void setMOSDischarge(bool state)
 
 void encoderHandler()
 {
-  if (encoderDirection) // encoder has 20 positions
+  // Wrap modulus depends on what the user is currently doing with the dial
+  uint8_t modulus;
+  switch (encoderMode)
   {
-    encoderState = (encoderState + 19) % 20; // decrement, wrapping at 0 -> 19
+  case MODE_SELECT_MOS:
+    modulus = 2;
+    break;
+  case MODE_PASSCODE_ENTRY:
+    modulus = 20;
+    break;
+  case MODE_IDLE:
+  default:
+    // First movement from idle starts a MOS-select interaction
+    encoderMode = MODE_SELECT_MOS;
+    encoderState = 0;
+    modulus = 2;
+    break;
+  }
+
+  if (encoderDirection) // anticlockwise
+  {
+    encoderState = (encoderState + modulus - 1) % modulus;
+  }
+  else // clockwise
+  {
+    encoderState = (encoderState + 1) % modulus;
+  }
+
+#if DEBUG_ENABLED
+  Serial.println("Encoder Direction: " + String(encoderDirection ? "Anticlockwise" : "Clockwise"));
+  Serial.println("Encoder State: " + String(encoderState));
+#endif
+
+  switch (encoderMode)
+  {
+  case MODE_SELECT_MOS:
+    selectedMOS = static_cast<SelectedMOSEnum>(encoderState);
+    screenUpdateFlag = true; // let the normal redraw cycle pick up the new label highlight
+    break;
+  case MODE_PASSCODE_ENTRY:
+    drawPasscodeDigit();
+    break;
+  default:
+    break;
+  }
+
+  encoderFlag = false;
+}
+
+void incrementPasscode()
+{
+  // Store as 1-20 to match MOSPassword's range, not the raw 0-19 value
+  passcodeAttempt[passcodeIndex] = encoderState + 1;
+  passcodeIndex++;
+  encoderState = 0;
+  lastEncoderChangeus = micros(); // restart dwell window for the next digit
+
+  if (passcodeIndex >= passLength)
+  {
+    checkPasscode();
   }
   else
   {
-    encoderState = (encoderState + 1) % 20;
+    drawPasscodeDigit();
   }
-#if DEBUG_ENABLED
-  Serial.println("Encoder Direction: " + String(encoderDirection ? "Anticlockwise" : " Clockwise"));
-  Serial.println("Encoder State: " + String(encoderState));
-#endif
-  /* TODO: handle encoder logic
+}
 
-  desired flow:
-    - select mos mode to change by rotating dial(encoder) and stopping on desired setting for x duration
-      - set an enum flag for main display loop to read and highlight the currently selected MOS setting by changing text colour to yellow for the next redraw cycle
-    - clear screen (once per MOSSwitchSelected true), display current encoder position on screen numerically in large size
-    - password input should function like like a physical lock with a dial
-      - encoderState saves to current attempt buffer on direction change (or maybe stop for a duration or use encoder button?)
-      - last digit must be stopped on for x duration for its entry to be confirmed
+void checkPasscode()
+{
+  bool correct = true;
+  for (uint8_t i = 0; i < passLength; i++)
+  {
+    if (passcodeAttempt[i] != MOSPassword[i])
+    {
+      correct = false;
+      break;
+    }
+  }
 
-    - each encoder state change starts/resets a counter for a timeout if more than z seconds passes since last input
-    - all encoder inputs should be bidirectional
-    - if an additional input button is required the encoder can be pressed in for a signal on the SW pin
-      - encoder input is NOT debounced
+  if (correct) // if correct toggle state
+  {
+    if (selectedMOS == SEL_CHARGE)
+    {
+      setMOSCharge(!BMSData.MOSStatus[0]);
+    }
+    else
+    {
+      setMOSDischarge(!BMSData.MOSStatus[1]);
+    }
+  }
+  resetToIdle();
+}
 
-    check which direction turned, increment combo, when entered digits reaches pass length check password, and if correct, toggle selected MOS state */
-  encoderFlag = false;
+void resetToIdle()
+{
+  timerAlarmDisable(encoderTimer);
+
+  encoderActive = false;
+  encoderMode = MODE_IDLE;
+  MOSSwitchSelected = false;
+  encoderState = 0;
+  passcodeIndex = 0;
+  for (size_t i = 0; i < passLength; i++)
+  {
+    passcodeAttempt[i] = 0;
+  }
+
+  segmentDisplay();
+  LastBMSData = BMSDataStruct(); // force refreshDisplay() to repaint every section
+  screenUpdateFlag = true;
 }
 
 void configureHWTimers(int dataRate, int screenUpdateRate)
@@ -641,7 +752,7 @@ void configureHWTimers(int dataRate, int screenUpdateRate)
   encoderTimer = timerBegin(2, 80, true); // timer 2
   timerAttachInterrupt(encoderTimer, &encoder_timeout_ISR, true);
   timerAlarmWrite(encoderTimer, ENCODER_ATTEMPT_TIMEOUT_ms * 1000UL, false); // no auto-reload, fires once
-  // left disabled here armed when the encoder touched
+  // left disabled here, armed when the encoder touched
 }
 
 void IRAM_ATTR data_timer_ISR()
@@ -652,6 +763,11 @@ void IRAM_ATTR data_timer_ISR()
 void IRAM_ATTR screen_timer_ISR()
 {
   screenUpdateFlag = true;
+}
+
+void IRAM_ATTR encoder_timeout_ISR()
+{
+  encoderTimeoutFlag = true;
 }
 
 void IRAM_ATTR encoder_CL_ISR()
@@ -671,9 +787,4 @@ void IRAM_ATTR encoder_CL_ISR()
 
   encoderActive = true;
   encoderFlag = true;
-}
-
-void IRAM_ATTR encoder_timeout_ISR()
-{
-  encoderTimeoutFlag = true;
 }
