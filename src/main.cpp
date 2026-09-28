@@ -96,6 +96,7 @@ constexpr uint32_t ENCODER_DIGIT_DWELL_ms = 1000;
 constexpr uint32_t ENCODER_ATTEMPT_TIMEOUT_ms = 5000;
 volatile ulong lastEncoderChangeus = 0;
 volatile bool encoderActive = false;
+volatile uint8_t ENCODER_ACTIVE_DISPLAY_UPDATE_HZ = 10;
 
 struct BMSDataStruct
 {
@@ -263,6 +264,16 @@ void loop()
     resetToIdle();
 #if DEBUG_ENABLED
     Serial.println("Encoder timed out — resetting to main display");
+#endif
+  }
+
+  static bool lastEncoderActiveForTimer = false;
+  if (encoderActive != lastEncoderActiveForTimer) // make screen more responsive when user interacting
+  {
+    lastEncoderActiveForTimer = encoderActive;
+    setScreenUpdateRate(encoderActive ? ENCODER_ACTIVE_DISPLAY_UPDATE_HZ : DISPLAY_UPDATE_HZ);
+#if DEBUG_ENABLED
+    Serial.println(encoderActive ? "Screen refresh: 10Hz (encoder active)" : "Screen refresh: 1Hz (idle)");
 #endif
   }
 
@@ -750,6 +761,12 @@ void resetToIdle()
   segmentDisplay();
   LastBMSData = BMSDataStruct(); // force refreshDisplay() to repaint every section
   screenUpdateFlag = true;
+}
+
+void setScreenUpdateRate(uint8_t hz)
+{
+  const uint32_t periodUs = static_cast<uint32_t>(1000000ULL / hz);
+  timerAlarmWrite(screenTimer, periodUs, true);
 }
 
 void configureHWTimers(int dataRate, int screenUpdateRate)
