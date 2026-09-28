@@ -546,11 +546,11 @@ void encoderHandler()
 {
   if (encoderDirection) // encoder has 20 positions
   {
-    encoderState = (encoderState - 1) % 19; // decrement, wrapping at 0
+    encoderState = (encoderState + 19) % 20; // decrement, wrapping at 0 -> 19
   }
   else
   {
-    encoderState = (encoderState + 1) % 19;
+    encoderState = (encoderState + 1) % 20;
   }
 #if DEBUG_ENABLED
   Serial.println("Encoder Direction: " + String(encoderDirection ? "Anticlockwise" : " Clockwise"));
