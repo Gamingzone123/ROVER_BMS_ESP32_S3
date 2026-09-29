@@ -1,184 +1,19 @@
 /* ======= Includes ======= */
 #include <Arduino.h>
-#include <Adafruit_GFX.h>     // base adafruit graphic lib required by the tft
-#include <Adafruit_ILI9341.h> // library for the tft
-#include <SPI.h>              // SPI 0 and 1 are used by the board itself, SPI 2 is used for the ethernet, must use eth 3 for tft screen
+#include <SPI.h> // SPI 0 and 1 are used by the board itself, SPI 2 is used for the ethernet, must use eth 3 for tft screen
 // May need an I2C library here
-#include <ArduinoJson.h>
 #include <stdint.h>
 #include <string>
 #include <Jikong_Handler.h>
 #include <Pre_charge.h> // removeable?
+#include <BMSData.h>
+#include <Display.h>
+#include <settings.h> // globals and definitions in settings.h
 // let GC & automation worry about MicroROS
-
-/* ======= Compiler Switches ======= */
-#define DEBUG_ENABLED 1              // for debugging with a PC
-#define NO_BMS 1                     // for testing without the BMS unit
-#define DISABLE_DISCHARGE_ON_ERROR 0 // whether to disable rover power on BMS error
-
-/* ======= Pin defs ======= */
-// Use constexpr instead of #define, more useful for modern C++ at compile time
-/*  Reserved / Do Not Use
-  GPIO0        BOOT button (strapping pin)
-  GPIO3        JTAG strap
-  GPIO19/20    USB D-/D+ (native USB)
-  GPIO21       Onboard RGB LED (RGB_DIN) — hardware trace
-  GPIO22-25    Not bonded out on this chip package
-  GPIO26-32    Internal Flash/PSRAM bus
-  GPIO43/44    UART0 TX/RX — reserved for flashing/serial monitor
-  GPIO45/46    Strapping pins (voltage select / boot mode)
-*/
-/*preset SPI pins for W5500 Ethernet are hardwired not changeable*/
-constexpr uint8_t W5500_RST = 9;
-constexpr uint8_t W5500_INT = 10;
-constexpr uint8_t W5500_MOSI = 11;
-constexpr uint8_t W5500_MISO = 12;
-constexpr uint8_t W5500_SCLK = 13;
-constexpr uint8_t W5500_CS = 14;
-
-/*the SD card pins are also set in stone*/
-constexpr uint8_t SD_CS = 4;
-constexpr uint8_t SD_MISO = 5;
-constexpr uint8_t SD_MOSI = 6;
-constexpr uint8_t SD_CLK = 7;
-
-/*UART 1 for BMS comms*/
-constexpr uint8_t JIKONG_TX = 17;
-constexpr uint8_t JIKONG_RX = 18;
-
-/*IO Pins for comms with ATTiny85*/
-// TODO:rename and assign pins when comms protocol is decided
-//      if using I2C for comms, set SDA and SCL pins separately and add constant for I2C address
-constexpr uint8_t ATTINY_1 = 34;
-constexpr uint8_t ATTINY_2 = 35;
-
-/*Pins for use with rotary encoder*/
-constexpr uint8_t KY040_CLK = 8;
-constexpr uint8_t KY040_DT = 15;
-constexpr uint8_t KY040_SW = 16;
-
-/*DEPRECATED Pins for comms with Precharge unit
-constexpr uint8_t PRECHARGE_CH_A = 25; // GPIO19
-constexpr uint8_t PRECHARGE_CH_B = 26; // GPIO20*/
-
-/*SPI pins for TFT screen uses SPI3 via GPIO Matrix*/
-constexpr uint8_t TFT_RST = 38;
-constexpr uint8_t TFT_MOSI = 39;
-constexpr uint8_t TFT_DC = 40;
-constexpr uint8_t TFT_SCLK = 41;
-constexpr uint8_t TFT_CS = 42;
-
-// Free / Spare: GPIO pins 2, 8, 15, 33, 37, 47, 48
-
-/* ======= Interrupt Flags ======= */
-volatile bool screenUpdateFlag = false;
-volatile bool getDataFlag = false;
-volatile bool killFlag = false;
-volatile bool encoderFlag = false;
-volatile bool encoderTimeoutFlag = false;
-
-/* ======= Globals ======= */
-
-hw_timer_t *dataTimer = NULL;
-hw_timer_t *screenTimer = NULL;
-hw_timer_t *encoderTimer = NULL;
-
-constexpr uint16_t BMS_COMMS_TIMEOUT_ms = 1000;
-constexpr uint8_t numCells = 12;
-constexpr uint8_t cellsPBattery = 6;
-constexpr uint8_t numBatteries = 2;
-JikongMessenger JKMessenger(&Serial2, BMS_COMMS_TIMEOUT_ms, numCells);
-
-constexpr uint8_t MOSPassword[] = {0, 0, 0};
-constexpr uint8_t passLength = sizeof(MOSPassword) / sizeof(MOSPassword[0]); // compute num elements in array
-uint8_t passcodeAttempt[passLength] = {};
-constexpr uint32_t ENCODER_DIGIT_DWELL_ms = 1000;
-constexpr uint32_t ENCODER_ATTEMPT_TIMEOUT_ms = 5000;
-volatile ulong lastEncoderChangeus = 0;
-volatile bool encoderActive = false;
-volatile uint8_t ENCODER_ACTIVE_DISPLAY_UPDATE_HZ = 10;
-
-struct BMSDataStruct
-{
-  uint8_t batteryLife = 50;
-  bool MOSStatus[2] = {0, 0}; // {charge, discharge} both 0 or 1
-  int16_t packTemp = 25;      // is this per battery, there are 2?
-  uint32_t cellVoltages[numCells] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
-  uint16_t currentDraw = 0;
-  uint16_t totalVoltage = 12;
-  std::string error = ""; // append warning strings here as they are received
-};
-
-/* Each colour is enumerated by a 3-bit value where each bit marks whether
-   the Red, Green, or Blue channel is lit (RGB)
-
-   | Colour  | RGB Bits | Decimal |
-   |---------|----------|---------|
-   | Blue    | 001      | 1       |
-   | Green   | 010      | 2       |
-   | Cyan    | 011      | 3       |
-   | Red     | 100      | 4       |
-   | Magenta | 101      | 5       |
-   | Yellow  | 110      | 6       |
-   | White   | 111      | 7       |
-*/
-enum LEDStripColourEnum
-{
-  BLUE_MOTION = 0b001, // start from 1 so the bit mapping makes sense
-  GREEN_MOTION_AUTO = 0b010,
-  CYAN_MOTION_AUTO_DELAY = 0b011,
-  RED_ERROR = 0b100,
-  MAGENTA_STARTING_CONFLICT_ERROR = 0b101,
-  YELLOW_LOCKED_INOPERABLE = 0b110,
-  WHITE_SAFE_INTERACT = 0b111
-};
-
-/*DEPRECATED
-PreCharge PreCharger(PRECHARGE_CH_A, PRECHARGE_CH_B);*/
-
-enum EncoderDirectionsEnum
-{
-  CLOCKWISE,
-  ANTICLOCKWISE
-};
-
-enum EncoderModeEnum
-{
-  MODE_IDLE,
-  MODE_SELECT_MOS,
-  MODE_PASSCODE_ENTRY
-};
-volatile EncoderModeEnum encoderMode = MODE_IDLE;
-
-enum SelectedMOSEnum
-{
-  SEL_CHARGE,
-  SEL_DISCHARGE
-};
-SelectedMOSEnum selectedMOS = SEL_CHARGE;
-
-uint8_t passcodeIndex = 0;
-
-volatile bool encoderDirection = -1;
-
-Adafruit_ILI9341 tft = Adafruit_ILI9341(TFT_CS, TFT_DC, TFT_MOSI, TFT_SCLK, TFT_RST);
-constexpr uint8_t GET_DATA_RATE_HZ = 2;
-constexpr uint8_t DISPLAY_UPDATE_HZ = 1;
-const uint16_t screenWidth = tft.height(); // if rotation is odd, width and height swap
-const uint16_t screenHeight = tft.width();
-BMSDataStruct BMSData;
-BMSDataStruct LastBMSData;
-uint8_t encoderState = 0;
-bool MOSSwitchSelected = false;
 
 /* ======= Declare Functions ======= */
 
-void getBMSData();
-String getVerboseBMS();
 void setLEDStripColour(LEDStripColourEnum colour);
-void segmentDisplay();
-void refreshDisplay();
-void drawPasscodeDigit();
 void incrementPasscode();
 void checkPasscode();
 void killSwitch();
@@ -213,25 +48,11 @@ void setup()
   setLEDStripColour(MAGENTA_STARTING_CONFLICT_ERROR);
 
   // initialise TFT
-  tft.begin();
-  tft.setRotation(3);
-  tft.setTextColor(ILI9341_WHITE, ILI9341_BLACK);
-  tft.setTextSize(1);
-
+  beginDisplay();
   segmentDisplay();
 
 #if NO_BMS
-  LastBMSData.batteryLife = 30;
-  LastBMSData.MOSStatus[0] = 1;
-  LastBMSData.MOSStatus[1] = 1;
-  LastBMSData.packTemp = 30;
-  for (size_t i = 0; i < 12; i++)
-  {
-    LastBMSData.cellVoltages[i] = 1;
-  }
-  LastBMSData.currentDraw = 1;
-  LastBMSData.totalVoltage = 10;
-  LastBMSData.error = "";
+  getDummyBMS();
 #endif
 
   pinMode(KY040_CLK, INPUT_PULLUP);
@@ -279,7 +100,7 @@ void loop()
   }
 
   /* Dwell-based confirmation: if the encoder has sat still for ENCODER_DIGIT_DWELL_ms while a selection/entry is in progress, treat the current value as confirmed.
-     Alternatives considered: confirm on direction reversal, or confirm via a press on the encoder's SW pin — dwell is used as the primary mechanism for now. */
+     Alternatives considered: confirm on direction reversal, or confirm via a press on the encoder's SW pin  */
   if (encoderActive && (micros() - lastEncoderChangeus) >= (ENCODER_DIGIT_DWELL_ms * 1000UL))
   {
     if (encoderMode == MODE_SELECT_MOS)
@@ -337,332 +158,6 @@ void loop()
         "; Error is: " + BMSData.error.c_str() + "\n");
 #endif
     screenUpdateFlag = false;
-  }
-}
-
-void getBMSData()
-{
-  JKMessenger.request_data();
-
-  const auto *warningFlags = JKMessenger.get_warning_flags();
-  BMSData.error.clear();
-
-  // map values to labels
-  struct WarningEntry
-  {
-    const char *label;
-    bool JikongMessenger::Warning_Flags::*member;
-  };
-
-  const WarningEntry warningEntries[] = {
-      {"Low capacity", &JikongMessenger::Warning_Flags::low_capacity},
-      {"MOS tube overtemp", &JikongMessenger::Warning_Flags::MOS_tube_OT},
-      {"Charging overvoltage", &JikongMessenger::Warning_Flags::charging_OV},
-      {"Discharge undervoltage", &JikongMessenger::Warning_Flags::discharge_UV},
-      {"Battery overtemp", &JikongMessenger::Warning_Flags::battery_OT},
-      {"Charging overcurrent", &JikongMessenger::Warning_Flags::charging_OC},
-      {"Discharge overcurrent", &JikongMessenger::Warning_Flags::discharge_OC},
-      {"Cell pressure differential", &JikongMessenger::Warning_Flags::Cell_pressure_differential},
-      {"Battery box overtemp", &JikongMessenger::Warning_Flags::BB_OT},
-      {"Battery low temp", &JikongMessenger::Warning_Flags::battery_low_temp},
-      {"Cell overvoltage", &JikongMessenger::Warning_Flags::monomer_OV},
-      {"Cell undervoltage", &JikongMessenger::Warning_Flags::monomer_UV},
-      {"Protection 309A", &JikongMessenger::Warning_Flags::protection_309A},
-  };
-
-  for (const auto &entry : warningEntries) // for entry in warningEntries
-  {
-    if (warningFlags && warningFlags->*entry.member)
-    {
-      if (!BMSData.error.empty())
-      {
-        BMSData.error += "; ";
-      }
-      BMSData.error += entry.label;
-    }
-  }
-
-  // error checking
-  if (BMSData.error != "")
-  {
-    setLEDStripColour(RED_ERROR);
-#if DISABLE_DISCHARGE_ON_ERROR
-    JKMessenger.setMOS_state(false, false);
-#endif
-    tft.setCursor(screenHeight / 2, 0);
-    tft.setTextColor(ILI9341_RED, ILI9341_BLACK);
-    tft.setTextSize(3);
-    tft.setTextWrap(1);
-    tft.print("BMS Errors Detected: " + String(BMSData.error.c_str()) + "\n"); // list errors
-  }
-
-  BMSData.batteryLife = JKMessenger.get_remaining_capacity_pct();
-  const JikongMessenger::Cell_Voltages *cellVoltages = JKMessenger.get_cell_voltage_mV();
-  for (size_t i = 0; i < numCells; i++)
-  {
-    BMSData.cellVoltages[i] = cellVoltages[i].cellVoltage;
-  }
-  BMSData.currentDraw = JKMessenger.get_current_dA();
-  BMSData.MOSStatus[0] = JKMessenger.get_status_flags()->charging_MOS_status;
-  BMSData.MOSStatus[1] = JKMessenger.get_status_flags()->discharge_MOS_status;
-  BMSData.packTemp = JKMessenger.get_battery_temp_dC();
-  BMSData.totalVoltage = JKMessenger.get_total_voltage_mV();
-}
-
-String getVerboseBMS()
-{
-  JKMessenger.request_data();
-
-  JsonDocument document;
-  JsonObject measurements = document["measurements"].to<JsonObject>();
-  JsonArray cellVoltages = measurements["cellVoltages"].to<JsonArray>();
-  const JikongMessenger::Cell_Voltages *cells = JKMessenger.get_cell_voltage_mV();
-  if (cells)
-  {
-    for (size_t i = 0; i < numCells; ++i)
-    {
-      JsonObject cell = cellVoltages.add<JsonObject>();
-      cell["cellNumber"] = cells[i].cellNum;
-      cell["voltage_mV"] = cells[i].cellVoltage;
-    }
-  }
-  measurements["powerTubeTemp_dC"] = JKMessenger.get_power_tube_temp_dC();
-  measurements["batteryBoxTemp_dC"] = JKMessenger.get_battery_box_temp_dC();
-  measurements["batteryTemp_dC"] = JKMessenger.get_battery_temp_dC();
-  measurements["totalVoltage_mV"] = JKMessenger.get_total_voltage_mV();
-  measurements["current_dA"] = JKMessenger.get_current_dA();
-  measurements["remainingCapacity_pct"] = JKMessenger.get_remaining_capacity_pct();
-  measurements["temperatureSensorCount"] = JKMessenger.get_temp_sensor_count_n();
-  measurements["cycleCount"] = JKMessenger.get_cycle_count();
-  measurements["totalCycleCapacity_Ah"] = JKMessenger.get_total_cycle_capacity_Ah();
-  measurements["stringCount"] = JKMessenger.get_string_count_n();
-
-  const JikongMessenger::Warning_Flags *warningFlags = JKMessenger.get_warning_flags();
-  JsonObject warnings = document["warnings"].to<JsonObject>();
-  warnings["lowCapacity"] = warningFlags->low_capacity;
-  warnings["mosTubeOvertemperature"] = warningFlags->MOS_tube_OT;
-  warnings["chargingOvervoltage"] = warningFlags->charging_OV;
-  warnings["dischargeUndervoltage"] = warningFlags->discharge_UV;
-  warnings["batteryOvertemperature"] = warningFlags->battery_OT;
-  warnings["chargingOvercurrent"] = warningFlags->charging_OC;
-  warnings["dischargeOvercurrent"] = warningFlags->discharge_OC;
-  warnings["cellPressureDifferential"] = warningFlags->Cell_pressure_differential;
-  warnings["batteryBoxOvertemperature"] = warningFlags->BB_OT;
-  warnings["batteryLowTemperature"] = warningFlags->battery_low_temp;
-  warnings["cellOvervoltage"] = warningFlags->monomer_OV;
-  warnings["cellUndervoltage"] = warningFlags->monomer_UV;
-  warnings["protection309A"] = warningFlags->protection_309A;
-
-  const JikongMessenger::Status_Flags *statusFlags = JKMessenger.get_status_flags();
-  JsonObject status = document["status"].to<JsonObject>();
-  status["chargingMosOn"] = statusFlags->charging_MOS_status;
-  status["dischargeMosOn"] = statusFlags->discharge_MOS_status;
-  status["balancingOn"] = statusFlags->balance_switch_state;
-  status["batteryConnected"] = statusFlags->battery_conn_status;
-
-  JsonObject voltageProtections = document["voltageProtections"].to<JsonObject>();
-  voltageProtections["packOvervoltage_mV"] = JKMessenger.get_pack_overvoltage_mV();
-  voltageProtections["packUndervoltage_mV"] = JKMessenger.get_pack_undervoltage_mV();
-  voltageProtections["cellOvervoltage_mV"] = JKMessenger.get_cell_overvoltage_mV();
-  voltageProtections["cellOvervoltageRecovery_mV"] = JKMessenger.get_cell_overvoltage_recovery_mV();
-  voltageProtections["cellOvervoltageDelay_s"] = JKMessenger.get_cell_overvoltage_delay_s();
-  voltageProtections["cellUndervoltage_mV"] = JKMessenger.get_cell_undervoltage_mV();
-  voltageProtections["cellUndervoltageRelease_mV"] = JKMessenger.get_monomer_undervoltage_release_mV();
-  voltageProtections["cellUndervoltageDelay_s"] = JKMessenger.get_cell_undervoltage_delay_s();
-  voltageProtections["cellPressureDifference_mV"] = JKMessenger.get_cell_pressure_diff_protection_mV();
-
-  JsonObject currentProtections = document["currentProtections"].to<JsonObject>();
-  currentProtections["dischargeOvercurrent_A"] = JKMessenger.get_discharge_overcurrent_A();
-  currentProtections["dischargeOvercurrentDelay_s"] = JKMessenger.get_discharge_overcurrent_delay_s();
-  currentProtections["chargeOvercurrent_A"] = JKMessenger.get_charge_overcurrent_A();
-  currentProtections["chargeOvercurrentDelay_s"] = JKMessenger.get_charge_overcurrent_delay_s();
-
-  JsonObject balancing = document["balancing"].to<JsonObject>();
-  balancing["startVoltage_mV"] = JKMessenger.get_balance_start_voltage_mV();
-  balancing["voltageDifference_mV"] = JKMessenger.get_balance_diff_mV();
-  balancing["activeBalanceEnabled"] = JKMessenger.is_active_balance_enabled();
-
-  JsonObject temperatureProtections = document["temperatureProtections"].to<JsonObject>();
-  temperatureProtections["powerTubeProtection_dC"] = JKMessenger.get_power_tube_temp_protection_value_dC();
-  temperatureProtections["powerTubeRecovery_dC"] = JKMessenger.get_power_tube_temp_recovery_value_dC();
-  temperatureProtections["boxHigh_dC"] = JKMessenger.get_box_high_temp_dC();
-  temperatureProtections["boxRecovery_dC"] = JKMessenger.get_box_temp_recovery_dC();
-  temperatureProtections["batteryDifference_dC"] = JKMessenger.get_battery_temp_diff_dC();
-  temperatureProtections["chargeHigh_dC"] = JKMessenger.get_charge_high_temp_dC();
-  temperatureProtections["dischargeHigh_dC"] = JKMessenger.get_discharge_high_temp_dC();
-  temperatureProtections["chargeLow_dC"] = JKMessenger.get_charge_low_temp_dC();
-  temperatureProtections["chargeLowRecovery_dC"] = JKMessenger.get_charge_low_temp_recovery_dC();
-  temperatureProtections["dischargeLow_dC"] = JKMessenger.get_discharge_low_temp_dC();
-  temperatureProtections["dischargeLowRecovery_dC"] = JKMessenger.get_discharge_low_temp_recovery_dC();
-
-  JsonObject configuration = document["configuration"].to<JsonObject>();
-  configuration["batteryStringSetting"] = JKMessenger.get_battery_string_setting();
-  configuration["batteryCapacitySetting"] = JKMessenger.get_battery_capacity_setting();
-  configuration["batteryCapacity_Ah"] = JKMessenger.get_battery_capacity_Ah();
-  configuration["chargeMosEnabled"] = JKMessenger.is_charge_mos_enabled();
-  configuration["dischargeMosEnabled"] = JKMessenger.is_discharge_mos_enabled();
-  configuration["currentCalibrationOffset"] = JKMessenger.get_current_calibration_offset();
-  configuration["pBoardAddress"] = JKMessenger.get_P_board_address();
-  configuration["batteryType"] = JKMessenger.get_battery_type();
-  configuration["sleepDelay_s"] = JKMessenger.get_sleep_delay_s();
-  configuration["lowCapacityAlarm_pct"] = JKMessenger.get_low_cap_alarmVol_pct();
-  configuration["parameterPassword"] = JKMessenger.get_parameter_password();
-  configuration["dedicatedChargerEnabled"] = JKMessenger.is_dedicated_charger_enabled();
-  configuration["deviceId"] = JKMessenger.get_device_id();
-  configuration["manufactureYear"] = JKMessenger.get_manufacture_year();
-  configuration["manufactureMonth"] = JKMessenger.get_manufacture_month();
-  configuration["runtimeHours"] = JKMessenger.get_runtime_hours();
-  configuration["firmwareVersion"] = JKMessenger.get_firmware_version();
-  configuration["currentCalibrationEnabled"] = JKMessenger.is_current_calibration_enabled();
-  configuration["actualCapacity_Ah"] = JKMessenger.get_actual_capacity_Ah();
-  configuration["manufacturerId"] = JKMessenger.get_manufacturer_id();
-  configuration["protocolVersion"] = JKMessenger.get_protocol_version_number();
-
-  String json;
-  serializeJson(document, json);
-#if DEBUG_ENABLED
-  Serial.println(json);
-#endif
-  return json;
-}
-
-void segmentDisplay() // divide screen into 6 regions
-{
-  tft.fillScreen(ILI9341_BLACK);
-  tft.drawFastHLine(0, screenHeight / 2, screenWidth, ILI9341_WHITE);
-  tft.drawFastVLine(screenWidth / 3, 0, screenHeight, ILI9341_WHITE);
-  tft.drawFastVLine(screenWidth * 2 / 3, 0, screenHeight, ILI9341_WHITE);
-}
-
-void refreshDisplay() // TODO: add colours to text where relevant
-{
-  if (!MOSSwitchSelected)
-  {
-
-    // casts are defensive for the division, shouldnt come into play
-    const uint16_t columnWidth = static_cast<uint16_t>(screenWidth / 3);
-    const uint16_t rowHeight = static_cast<uint16_t>(screenHeight / 2);
-    constexpr uint16_t margin = 2;
-
-    // '[&]' allows to access local vars
-    auto printSection = [&](const String &label, const String &value, uint16_t left, uint16_t top,
-                            uint16_t valueSize = 4, uint16_t valueColor = ILI9341_WHITE,
-                            uint16_t labelColor = ILI9341_WHITE)
-    {
-      tft.setTextColor(labelColor, ILI9341_BLACK);
-      tft.setCursor(left + margin, top);
-      tft.println(label);
-      tft.setTextSize(valueSize);
-      tft.setTextColor(valueColor, ILI9341_BLACK);
-      tft.setCursor(left + margin, top + 10);
-      tft.println(value);
-      tft.setTextSize(1);
-      tft.setTextColor(ILI9341_WHITE, ILI9341_BLACK);
-    };
-
-    tft.setTextSize(1);
-    if (LastBMSData.totalVoltage != BMSData.totalVoltage)
-    {
-      printSection("Total Voltage", String(BMSData.totalVoltage) + "mV", 0, 2);
-    }
-    if (LastBMSData.packTemp != BMSData.packTemp)
-    {
-      printSection("Pack Temp", String(BMSData.packTemp) + "C", columnWidth + 1, 2);
-    }
-    if (LastBMSData.currentDraw != BMSData.currentDraw)
-    {
-      printSection("Current Draw", String(BMSData.currentDraw) + "A", columnWidth * 2 + 2, 2);
-    }
-    bool mosSectionNeedsRedraw = (LastBMSData.MOSStatus[0] != BMSData.MOSStatus[0]) ||
-                                 (LastBMSData.MOSStatus[1] != BMSData.MOSStatus[1]) ||
-                                 (encoderMode == MODE_SELECT_MOS);
-    if (mosSectionNeedsRedraw)
-    {
-      uint16_t chargeLabelColor = (encoderMode == MODE_SELECT_MOS && selectedMOS == SEL_CHARGE) ? ILI9341_YELLOW : ILI9341_WHITE;
-      uint16_t dischargeLabelColor = (encoderMode == MODE_SELECT_MOS && selectedMOS == SEL_DISCHARGE) ? ILI9341_YELLOW : ILI9341_WHITE;
-
-      printSection("Charge MOS", BMSData.MOSStatus[0] ? "Enabled" : "Disabled", 0, rowHeight + 3, 2,
-                   BMSData.MOSStatus[0] ? ILI9341_GREEN : ILI9341_RED, chargeLabelColor);
-      printSection("Discharge MOS", BMSData.MOSStatus[1] ? "Enabled" : "Disabled", 0, rowHeight + 26 + 3, 2,
-                   BMSData.MOSStatus[1] ? ILI9341_GREEN : ILI9341_RED, dischargeLabelColor);
-      tft.setTextColor(ILI9341_WHITE);
-    }
-    bool cellVoltagesChanged = false;
-    for (size_t i = 0; i < numCells; i++)
-    {
-      if (LastBMSData.cellVoltages[i] != BMSData.cellVoltages[i])
-      {
-        cellVoltagesChanged = true;
-        break;
-      }
-    }
-    if (cellVoltagesChanged)
-    {
-      // these static casts stop the compiler yelling at me
-      const uint16_t cellX[cellsPBattery / 2] = {
-          static_cast<uint16_t>(columnWidth + 8),
-          static_cast<uint16_t>(columnWidth + 38),
-          static_cast<uint16_t>(columnWidth + 68)};
-      const uint16_t cellY[numBatteries][cellsPBattery / 3] = {
-          {static_cast<uint16_t>(rowHeight + 20), static_cast<uint16_t>(rowHeight + 32)},
-          {static_cast<uint16_t>(rowHeight + 76), static_cast<uint16_t>(rowHeight + 88)}};
-
-      tft.setCursor(columnWidth + 3, rowHeight + 3);
-      tft.println("Battery 1 mV/cell");
-      tft.setCursor(columnWidth + 3, rowHeight + 58 + 3);
-      tft.println("Battery 2 mV/cell");
-
-      for (size_t battery = 0; battery < numBatteries; battery++)
-      {
-        for (size_t row = 0; row < 2; row++)
-        {
-          for (size_t column = 0; column < 3; column++)
-          {
-            size_t index = battery * cellsPBattery + row * 3 + column;
-            tft.setCursor(cellX[column], cellY[battery][row]);
-            tft.print(BMSData.cellVoltages[index]);
-          }
-        }
-      }
-      tft.setTextColor(ILI9341_WHITE);
-    }
-    if (LastBMSData.batteryLife != BMSData.batteryLife)
-    {
-      printSection("Battery Life", String(BMSData.batteryLife) + "%", columnWidth * 2 + 2, rowHeight + 3);
-    }
-  }
-}
-
-void drawPasscodeDigit()
-{
-  tft.fillScreen(ILI9341_BLACK);
-
-  // current encoder position so the user knows what they are entering
-  String posText = String(encoderState + 1);
-  int16_t x1, y1;
-  uint16_t textW, textH;
-  tft.setTextSize(8);
-  tft.setTextColor(ILI9341_CYAN, ILI9341_BLACK);
-  tft.getTextBounds(posText, 0, 0, &x1, &y1, &textW, &textH);
-  tft.setCursor((screenWidth - textW) / 2, screenHeight / 3);
-  tft.println(posText);
-
-  // Progress dots filled once that digit has been entered.
-  const uint16_t dotRadius = 8;
-  const uint16_t dotY = screenHeight - 30;
-  const uint16_t spacing = screenWidth / (passLength + 1);
-
-  for (uint8_t i = 0; i < passLength; i++)
-  {
-    uint16_t dotX = spacing * (i + 1);
-    if (i < passcodeIndex)
-    {
-      tft.fillCircle(dotX, dotY, dotRadius, ILI9341_WHITE);
-    }
-    else
-    {
-      tft.drawCircle(dotX, dotY, dotRadius, ILI9341_WHITE);
-    }
   }
 }
 
@@ -806,6 +301,9 @@ void resetToIdle()
 
   segmentDisplay();
   LastBMSData = BMSDataStruct(); // force refreshDisplay() to repaint every section
+#if NO_BMS
+  getDummyBMS();
+#endif
   screenUpdateFlag = true;
 }
 
