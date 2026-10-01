@@ -133,12 +133,11 @@ void drawPasscodeDigit()
 {
     if (passcodeIndex == 0)
     {
-        lastEncoderChangeus = micros();
+        timerWrite(encoderTimer, 0);
         if (!codeScreenTriggered)
         {
             tft.fillScreen(ILI9341_BLACK);
             codeScreenTriggered = true;
-            lastEncoderChangeus += 2000000;
         }
     }
 

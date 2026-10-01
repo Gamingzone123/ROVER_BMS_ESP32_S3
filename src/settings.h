@@ -8,6 +8,7 @@
 /* ======= Compiler Switches ======= */
 #define DEBUG_ENABLED 1              // for debugging with a PC
 #define NO_BMS 1                     // for testing without the BMS unit
+#define NO_ATTiny 1                  // for testing without ATTiny for LED strip control
 #define DISABLE_DISCHARGE_ON_ERROR 0 // whether to disable rover power on BMS error
 
 /* ======= Pin defs ======= */
@@ -72,7 +73,7 @@ constexpr uint8_t numBatteries = 2;
 constexpr uint8_t MOSPassword[] = {15, 7, 20};
 constexpr uint8_t passLength = sizeof(MOSPassword) / sizeof(MOSPassword[0]); // compute num elements in array
 constexpr uint32_t ENCODER_DIGIT_DWELL_ms = 1000;
-constexpr uint32_t ENCODER_ATTEMPT_TIMEOUT_ms = 5000;
+constexpr uint32_t ENCODER_ATTEMPT_TIMEOUT_ms = ENCODER_DIGIT_DWELL_ms * passLength + 1500;
 constexpr uint8_t ENCODER_ACTIVE_DISPLAY_UPDATE_HZ = 10;
 constexpr uint8_t GET_DATA_RATE_HZ = 2;
 constexpr uint8_t DISPLAY_UPDATE_HZ = 1;
@@ -159,6 +160,7 @@ extern uint8_t encoderState;
 extern SelectedMOSEnum selectedMOS;
 extern bool MOSSwitchSelected;
 extern volatile bool codeScreenTriggered;
+extern volatile bool encoderMovedSinceStageStart;
 
 // Display and BMS readings.
 extern JikongMessenger JKMessenger;

@@ -1,7 +1,7 @@
 /* ======= Includes ======= */
 #include <Arduino.h>
 #include <SPI.h> // SPI 0 and 1 are used by the board itself, SPI 2 is used for the ethernet, must use eth 3 for tft screen
-// May need an I2C library here
+// #include <Wire.h> // May need an I2C library here
 #include <stdint.h>
 #include <string>
 #include <Jikong_Handler.h>
@@ -39,13 +39,16 @@ void setup()
 #if !NO_BMS
   Serial2.begin(115200, SERIAL_8N1, JIKONG_RX, JIKONG_TX);
 #endif
+#if !NO_ATTiny
+#endif
   //  test ethernet connection (but dont error yet)
   //  delayed ethernet connection test as this board is upstream of it turning on
   //  test ROS2 connection
-  //  test ATTiny connection(?)
   JKMessenger.begin(115200);
 
+#if !NO_ATTiny
   setLEDStripColour(MAGENTA_STARTING_CONFLICT_ERROR);
+#endif
 
   // initialise TFT
   beginDisplay();
@@ -101,7 +104,8 @@ void loop()
 
   /* Dwell-based confirmation: if the encoder has sat still for ENCODER_DIGIT_DWELL_ms while a selection/entry is in progress, treat the current value as confirmed.
      Alternatives considered: confirm on direction reversal, or confirm via a press on the encoder's SW pin  */
-  if (encoderActive && (micros() - lastEncoderChangeus) >= (ENCODER_DIGIT_DWELL_ms * 1000UL))
+  if (encoderActive && encoderMovedSinceStageStart &&
+      (micros() - lastEncoderChangeus) >= (ENCODER_DIGIT_DWELL_ms * 1000UL))
   {
     if (encoderMode == MODE_SELECT_MOS)
     {
@@ -190,7 +194,7 @@ void setMOSDischarge(bool state)
   JKMessenger.setMOS_state(BMSData.MOSStatus[0], state);
 }
 
-void encoderHandler()
+void encoderHandler() // TODO: fix this mess
 {
   // Wrap modulus depends on what the user is currently doing with the dial
   uint8_t modulus;
@@ -206,8 +210,8 @@ void encoderHandler()
   default:
     // First movement from idle starts a MOS-select interaction
     encoderMode = MODE_SELECT_MOS;
-    encoderState = 0;
     modulus = 2;
+    encoderState = 0;
     break;
   }
 
@@ -229,7 +233,7 @@ void encoderHandler()
   {
   case MODE_SELECT_MOS:
     selectedMOS = static_cast<SelectedMOSEnum>(encoderState);
-    screenUpdateFlag = true; // let the normal redraw cycle pick up the new label highlight
+    screenUpdateFlag = true;
     break;
   case MODE_PASSCODE_ENTRY:
     drawPasscodeDigit();
@@ -247,7 +251,7 @@ void incrementPasscode()
   passcodeAttempt[passcodeIndex] = encoderState + 1;
   passcodeIndex++;
   encoderState = 0;
-  lastEncoderChangeus = micros(); // restart dwell window for the next digit
+  encoderMovedSinceStageStart = false; // next digit needs its own real turn
 
   if (passcodeIndex >= passLength)
   {
@@ -290,9 +294,10 @@ void resetToIdle()
   timerAlarmDisable(encoderTimer);
 
   encoderActive = false;
+  encoderMovedSinceStageStart = false;
   encoderMode = MODE_IDLE;
   MOSSwitchSelected = false;
-  encoderState = 0;
+  codeScreenTriggered = false;
   passcodeIndex = 0;
   for (size_t i = 0; i < passLength; i++)
   {
@@ -368,7 +373,7 @@ void IRAM_ATTR encoder_CL_ISR()
   encoderDirection = digitalRead(KY040_DT) ? CLOCKWISE : ANTICLOCKWISE; // if clockwise, CL pin will go low first, and visa versa
 
   uint32_t now = micros();
-  if (now - lastEncoderChangeus < 1500)
+  if (now - lastEncoderChangeus < 8000)
   {
     return;
   }
@@ -380,4 +385,5 @@ void IRAM_ATTR encoder_CL_ISR()
 
   encoderActive = true;
   encoderFlag = true;
+  encoderMovedSinceStageStart = true;
 }

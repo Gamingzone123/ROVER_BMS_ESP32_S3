@@ -20,6 +20,7 @@ uint8_t encoderState = 0;
 SelectedMOSEnum selectedMOS = SEL_CHARGE;
 bool MOSSwitchSelected = false;
 volatile bool codeScreenTriggered = false;
+volatile bool encoderMovedSinceStageStart = false;
 
 JikongMessenger JKMessenger(&Serial2, BMS_COMMS_TIMEOUT_ms, numCells);
 Adafruit_ILI9341 tft = Adafruit_ILI9341(TFT_CS, TFT_DC, TFT_MOSI, TFT_SCLK, TFT_RST);
