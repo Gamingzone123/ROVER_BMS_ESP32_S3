@@ -13,7 +13,7 @@
 
 /* ======= Declare Functions ======= */
 
-void setLEDStripColour(LEDStripColourEnum colour);
+bool setLEDStripColour(LEDStripColourEnum colour);
 void incrementPasscode();
 void checkPasscode();
 void killSwitch();
@@ -171,9 +171,21 @@ void loop()
   }
 }
 
-void setLEDStripColour(LEDStripColourEnum colour)
+bool setLEDStripColour(LEDStripColourEnum colour)
 {
-  // TODO: (tell ATTiny to?) set LEDstrip colour to colour value
+  Wire.beginTransmission(ATTINY_ADDR);
+  Wire.write(colour); // since the ATTiny will only be controlling the LED strip, I only need to transmit a colour which is also defined at the other end
+  uint8_t error = Wire.endTransmission();
+
+  if (error != 0)
+  {
+#if DEBUG_ENABLED
+    Serial.print("I2C error: ");
+    Serial.println(error);
+#endif
+    return false;
+  }
+  return true;
 }
 
 void killSwitch()

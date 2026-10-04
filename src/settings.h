@@ -41,11 +41,13 @@ constexpr uint8_t SD_CLK = 7;
 constexpr uint8_t JIKONG_TX = 17;
 constexpr uint8_t JIKONG_RX = 18;
 
+/*I2C pins*/
+constexpr uint8_t SDA = 34;
+constexpr uint8_t SCL = 35;
+
 /*IO Pins for comms with ATTiny85*/
-// TODO:rename and assign pins when comms protocol is decided
-//      if using I2C for comms, set SDA and SCL pins separately and add constant for I2C address
-constexpr uint8_t ATTINY_1 = 34;
-constexpr uint8_t ATTINY_2 = 35;
+constexpr uint8_t ATTINY_SDA = SDA;
+constexpr uint8_t ATTINY_SCL = SCL;
 
 /*Pins for use with rotary encoder*/
 constexpr uint8_t KY040_CLK = 8;
@@ -77,6 +79,9 @@ constexpr uint32_t ENCODER_ATTEMPT_TIMEOUT_ms = ENCODER_DIGIT_DWELL_ms * passLen
 constexpr uint8_t ENCODER_ACTIVE_DISPLAY_UPDATE_HZ = 10;
 constexpr uint8_t GET_DATA_RATE_HZ = 2;
 constexpr uint8_t DISPLAY_UPDATE_HZ = 1;
+constexpr uint8_t LED_UPDATE_RETRIES = 5;
+
+constexpr uint8_t ATTINY_ADDR = 0x08; // I2C address for ATTiny
 
 /* ======= Data Types ======= */
 struct BMSDataStruct
