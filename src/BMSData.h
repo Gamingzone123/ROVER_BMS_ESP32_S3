@@ -5,7 +5,7 @@
 
 void getBMSData();
 String getVerboseBMS();
-#if NO_BMS
+#if !BMS_ENABLED
 void getDummyBMS();
 #endif
 

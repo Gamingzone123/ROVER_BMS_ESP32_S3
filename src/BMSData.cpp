@@ -188,7 +188,7 @@ String getVerboseBMS()
     return json;
 }
 
-#if NO_BMS
+#if !BMS_ENABLED
 void getDummyBMS()
 {
     LastBMSData.batteryLife = 30;

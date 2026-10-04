@@ -36,17 +36,23 @@ void setup()
 #if DEBUG_ENABLED
   Serial.begin(115200);
 #endif
-#if !NO_BMS
+#if BMS_ENABLED
   Serial2.begin(115200, SERIAL_8N1, JIKONG_RX, JIKONG_TX);
 #endif
-#if !NO_ATTiny
+#if ATTINY_ENABLED
+  if not(Wire.begin(ATTINY_SDA, ATTINY_SCL, 100000))
+  {
+#if DEBUG_ENABLED
+    Serial.println("ATTiny connection failed");
+#endif
+  }
 #endif
   //  test ethernet connection (but dont error yet)
   //  delayed ethernet connection test as this board is upstream of it turning on
   //  test ROS2 connection
   JKMessenger.begin(115200);
 
-#if !NO_ATTiny
+#if ATTINY_ENABLED
   setLEDStripColour(MAGENTA_STARTING_CONFLICT_ERROR);
 #endif
 

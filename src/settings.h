@@ -7,8 +7,8 @@
 
 /* ======= Compiler Switches ======= */
 #define DEBUG_ENABLED 1              // for debugging with a PC
-#define NO_BMS 1                     // for testing without the BMS unit
-#define NO_ATTiny 1                  // for testing without ATTiny for LED strip control
+#define BMS_ENABLED 0                // set to 0 for testing without the BMS unit
+#define ATTINY_ENABLED 0             // set to 0 for testing without ATTiny for LED strip control
 #define DISABLE_DISCHARGE_ON_ERROR 0 // whether to disable rover power on BMS error
 
 /* ======= Pin defs ======= */
