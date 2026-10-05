@@ -142,7 +142,7 @@ void drawPasscodeDigit()
     }
 
     // current encoder position so the user knows what they are entering
-    String posText = String(encoderState + 1);
+    String posText = " " + String(encoderState + 1) + " ";
     int16_t x1, y1;
     uint16_t textW, textH;
     tft.setTextSize(8);

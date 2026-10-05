@@ -6,9 +6,16 @@
 #include <string>
 
 /* ======= Compiler Switches ======= */
-#define DEBUG_ENABLED 1              // for debugging with a PC
-#define BMS_ENABLED 0                // set to 0 for testing without the BMS unit
-#define ATTINY_ENABLED 0             // set to 0 for testing without ATTiny for LED strip control
+#define DEBUG_ENABLED 1  // for debugging with a PC
+#define BMS_ENABLED 0    // set to 0 for testing without the BMS unit
+#define ATTINY_ENABLED 0 // set to 0 for testing without ATTiny for LED strip control
+#define ROS_ENABLED 0    // set to 0 for testing without MicroROS
+#define SD_ENABLED 0     // set to 0 for testing without SD card
+// TODO: implement SD card
+#if SD_ENABLED
+#define CARD_LOGGING_ENABLED 0 // set to 0 for teting without logging to SD card
+// TODO: implement logging to sd card
+#endif
 #define DISABLE_DISCHARGE_ON_ERROR 0 // whether to disable rover power on BMS error
 
 /* ======= Pin defs ======= */
@@ -42,12 +49,12 @@ constexpr uint8_t JIKONG_TX = 17;
 constexpr uint8_t JIKONG_RX = 18;
 
 /*I2C pins*/
-constexpr uint8_t SDA = 34;
-constexpr uint8_t SCL = 35;
+constexpr uint8_t MAINSDA = 34;
+constexpr uint8_t MAINSCL = 35;
 
 /*IO Pins for comms with ATTiny85*/
-constexpr uint8_t ATTINY_SDA = SDA;
-constexpr uint8_t ATTINY_SCL = SCL;
+constexpr uint8_t ATTINY_SDA = MAINSDA;
+constexpr uint8_t ATTINY_SCL = MAINSCL;
 
 /*Pins for use with rotary encoder*/
 constexpr uint8_t KY040_CLK = 8;
@@ -74,9 +81,9 @@ constexpr uint8_t cellsPBattery = 6;
 constexpr uint8_t numBatteries = 2;
 constexpr uint8_t MOSPassword[] = {15, 7, 20};
 constexpr uint8_t passLength = sizeof(MOSPassword) / sizeof(MOSPassword[0]); // compute num elements in array
-constexpr uint32_t ENCODER_DIGIT_DWELL_ms = 1000;
+constexpr uint32_t ENCODER_DIGIT_DWELL_ms = 2000;
 constexpr uint32_t ENCODER_ATTEMPT_TIMEOUT_ms = ENCODER_DIGIT_DWELL_ms * passLength + 1500;
-constexpr uint8_t ENCODER_ACTIVE_DISPLAY_UPDATE_HZ = 10;
+constexpr uint8_t ENCODER_ACTIVE_DISPLAY_UPDATE_HZ = 30;
 constexpr uint8_t GET_DATA_RATE_HZ = 2;
 constexpr uint8_t DISPLAY_UPDATE_HZ = 1;
 constexpr uint8_t LED_UPDATE_RETRIES = 5;
@@ -89,8 +96,8 @@ struct BMSDataStruct
     uint8_t batteryLife = 50;
     bool MOSStatus[2] = {0, 0}; // {charge, discharge} both 0 or 1
     int16_t packTemp = 25;      // is this per battery, there are 2?
-    uint32_t cellVoltages[numCells] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
-    uint16_t currentDraw = 0;
+    uint32_t cellVoltages[numCells] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12};
+    uint16_t currentDraw = 2;
     uint16_t totalVoltage = 12;
     std::string error = ""; // append warning strings here as they are received
 };

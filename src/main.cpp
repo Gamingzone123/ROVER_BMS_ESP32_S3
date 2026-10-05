@@ -1,7 +1,7 @@
 /* ======= Includes ======= */
 #include <Arduino.h>
 #include <SPI.h> // SPI 0 and 1 are used by the board itself, SPI 2 is used for the ethernet, must use eth 3 for tft screen
-// #include <Wire.h> // May need an I2C library here
+#include <Wire.h>
 #include <stdint.h>
 #include <string>
 #include <Jikong_Handler.h>
@@ -47,8 +47,7 @@ void setup()
 #endif
   }
 #endif
-  //  test ethernet connection (but dont error yet)
-  //  delayed ethernet connection test as this board is upstream of it turning on
+  //  delayed ethernet connection test (as function elsewhere, called a duration after discharge enabled) as this board is upstream of it turning on
   //  test ROS2 connection
   JKMessenger.begin(115200);
 
@@ -60,13 +59,13 @@ void setup()
   beginDisplay();
   segmentDisplay();
 
-#if NO_BMS
+#if not BMS_ENABLED
   getDummyBMS();
 #endif
 
-  pinMode(KY040_CLK, INPUT_PULLUP);
-  pinMode(KY040_DT, INPUT_PULLUP);
-  pinMode(KY040_SW, INPUT_PULLUP);
+  pinMode(KY040_CLK, INPUT);
+  pinMode(KY040_DT, INPUT);
+  pinMode(KY040_SW, INPUT);
   attachInterrupt(digitalPinToInterrupt(KY040_CLK), encoder_CL_ISR, FALLING);
 
   configureHWTimers();
@@ -104,7 +103,7 @@ void loop()
     lastEncoderActiveForTimer = encoderActive;
     setScreenUpdateRate(encoderActive ? ENCODER_ACTIVE_DISPLAY_UPDATE_HZ : DISPLAY_UPDATE_HZ);
 #if DEBUG_ENABLED
-    Serial.println(encoderActive ? "Screen refresh: 10Hz (encoder active)" : "Screen refresh: 1Hz (idle)");
+    Serial.println(encoderActive ? "Screen refresh: 30Hz (encoder active)" : "Screen refresh: 1Hz (idle)");
 #endif
   }
 
@@ -119,8 +118,8 @@ void loop()
       encoderMode = MODE_PASSCODE_ENTRY;
       passcodeIndex = 0;
       encoderState = 0;
-      lastEncoderChangeus = micros(); // restart the dwell window for digit 1
       drawPasscodeDigit();
+      lastEncoderChangeus = micros(); // restart the dwell window for digit 1
     }
     else if (encoderMode == MODE_PASSCODE_ENTRY)
     {
@@ -130,7 +129,7 @@ void loop()
 
   if (getDataFlag)
   {
-#if (!NO_BMS)
+#if (BMS_ENABLED)
     getBMSData();
 #endif
     getDataFlag = false;
@@ -161,7 +160,7 @@ void loop()
       }
     }
     Serial.print(
-        "Respectively; "
+        " Respectively; "
         "Current Draw is " +
         String(BMSData.currentDraw) + "; " +
         "Total Voltage is: " + String(BMSData.totalVoltage) +
@@ -173,19 +172,32 @@ void loop()
 
 bool setLEDStripColour(LEDStripColourEnum colour)
 {
-  Wire.beginTransmission(ATTINY_ADDR);
-  Wire.write(colour); // since the ATTiny will only be controlling the LED strip, I only need to transmit a colour which is also defined at the other end
-  uint8_t error = Wire.endTransmission();
-
-  if (error != 0)
+  uint8_t errorCount = 0;
+  while (errorCount <= LED_UPDATE_RETRIES)
   {
+    uint8_t error = 0;
+    Wire.beginTransmission(ATTINY_ADDR);
+    Wire.write(colour); // since the ATTiny will only be controlling the LED strip, I only need to transmit a colour which is also defined at the other end
+    error = Wire.endTransmission();
+
+    if (error = 0)
+    {
+      return true;
+    }
 #if DEBUG_ENABLED
     Serial.print("I2C error: ");
     Serial.println(error);
+    Serial.println("Retrying...");
 #endif
-    return false;
+    errorCount++;
   }
-  return true;
+#if DEBUG_ENABLED
+  Serial.printf("LED Update Failed after %d retries...\n", LED_UPDATE_RETRIES);
+#endif
+#if ROS_ENABLED
+// TODO: tell ROS that the colour update failed
+#endif
+  return false;
 }
 
 void killSwitch()
@@ -268,7 +280,6 @@ void incrementPasscode()
   // Store as 1-20 to match MOSPassword's range, not the raw 0-19 value
   passcodeAttempt[passcodeIndex] = encoderState + 1;
   passcodeIndex++;
-  encoderState = 0;
   encoderMovedSinceStageStart = false; // next digit needs its own real turn
 
   if (passcodeIndex >= passLength)
@@ -324,7 +335,7 @@ void resetToIdle()
 
   segmentDisplay();
   LastBMSData = BMSDataStruct(); // force refreshDisplay() to repaint every section
-#if NO_BMS
+#if not BMS_ENABLED
   getDummyBMS();
 #endif
   screenUpdateFlag = true;
@@ -390,7 +401,7 @@ void IRAM_ATTR encoder_CL_ISR()
 {
   encoderDirection = digitalRead(KY040_DT) ? CLOCKWISE : ANTICLOCKWISE; // if clockwise, CL pin will go low first, and visa versa
 
-  uint32_t now = micros();
+  uint32_t now = micros(); // TODO: look into debouncing with average?
   if (now - lastEncoderChangeus < 8000)
   {
     return;
