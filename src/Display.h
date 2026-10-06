@@ -7,6 +7,7 @@ void beginDisplay();
 void segmentDisplay();
 void refreshDisplay();
 void drawPasscodeDigit();
+void drawPasscodeDots();
 void displayBMSError(const std::string &error);
 
 #endif

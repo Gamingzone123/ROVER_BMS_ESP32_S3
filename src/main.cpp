@@ -26,7 +26,7 @@ void setScreenUpdateRate(uint8_t hz);
 void configureHWTimers(int dataRate = GET_DATA_RATE_HZ, int screenUpdateRate = DISPLAY_UPDATE_HZ);
 void data_timer_ISR();
 void screen_timer_ISR();
-void encoder_CL_ISR();
+void encoder_quad_ISR();
 void encoder_timeout_ISR();
 
 /* ======= The Program =======*/
@@ -66,7 +66,10 @@ void setup()
   pinMode(KY040_CLK, INPUT);
   pinMode(KY040_DT, INPUT);
   pinMode(KY040_SW, INPUT);
-  attachInterrupt(digitalPinToInterrupt(KY040_CLK), encoder_CL_ISR, FALLING);
+
+  encoderPrevState = (digitalRead(KY040_CLK) << 1) | digitalRead(KY040_DT); // initialise encoder state
+  attachInterrupt(digitalPinToInterrupt(KY040_CLK), encoder_quad_ISR, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(KY040_DT), encoder_quad_ISR, CHANGE);
 
   configureHWTimers();
 }
@@ -118,7 +121,9 @@ void loop()
       encoderMode = MODE_PASSCODE_ENTRY;
       passcodeIndex = 0;
       encoderState = 0;
+      encoderMovedSinceStageStart = false;
       drawPasscodeDigit();
+      drawPasscodeDots();
       lastEncoderChangeus = micros(); // restart the dwell window for digit 1
     }
     else if (encoderMode == MODE_PASSCODE_ENTRY)
@@ -289,6 +294,7 @@ void incrementPasscode()
   else
   {
     drawPasscodeDigit();
+    drawPasscodeDots();
   }
 }
 
@@ -397,16 +403,24 @@ void IRAM_ATTR encoder_timeout_ISR()
   encoderTimeoutFlag = true;
 }
 
-void IRAM_ATTR encoder_CL_ISR()
+void IRAM_ATTR encoder_quad_ISR()
 {
-  encoderDirection = digitalRead(KY040_DT) ? CLOCKWISE : ANTICLOCKWISE; // if clockwise, CL pin will go low first, and visa versa
+  // Pack both pins into one 2-bit value, CLK in the top bit, DT in the bottom bit
+  uint8_t curState = (digitalRead(KY040_CLK) << 1) | digitalRead(KY040_DT);
 
-  uint32_t now = micros(); // TODO: look into debouncing with average?
-  if (now - lastEncoderChangeus < 8000)
+  // Combine "where we were" and "where we are" into one 4-bit lookup index.
+  uint8_t index = (encoderPrevState << 2) | curState;
+  int8_t step = QUAD_TABLE[index];
+
+  encoderPrevState = curState; // always update, even on a rejected transition
+
+  if (step == 0)
   {
-    return;
+    return; // not a legal single step i.e. a bounce, ignore
   }
-  lastEncoderChangeus = now;
+
+  encoderDirection = (step > 0) ? CLOCKWISE : ANTICLOCKWISE;
+  lastEncoderChangeus = micros();
 
   /* Reset encoder timout counter */
   timerWrite(encoderTimer, 0);

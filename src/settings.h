@@ -81,7 +81,7 @@ constexpr uint8_t cellsPBattery = 6;
 constexpr uint8_t numBatteries = 2;
 constexpr uint8_t MOSPassword[] = {15, 7, 20};
 constexpr uint8_t passLength = sizeof(MOSPassword) / sizeof(MOSPassword[0]); // compute num elements in array
-constexpr uint32_t ENCODER_DIGIT_DWELL_ms = 2000;
+constexpr uint32_t ENCODER_DIGIT_DWELL_ms = 2500;
 constexpr uint32_t ENCODER_ATTEMPT_TIMEOUT_ms = ENCODER_DIGIT_DWELL_ms * passLength + 1500;
 constexpr uint8_t ENCODER_ACTIVE_DISPLAY_UPDATE_HZ = 30;
 constexpr uint8_t GET_DATA_RATE_HZ = 2;
@@ -173,12 +173,19 @@ extern SelectedMOSEnum selectedMOS;
 extern bool MOSSwitchSelected;
 extern volatile bool codeScreenTriggered;
 extern volatile bool encoderMovedSinceStageStart;
+extern const int8_t QUAD_TABLE[16];
+extern volatile uint8_t encoderPrevState;
+constexpr uint16_t DIGIT_FIELD_W = 100;
+constexpr uint16_t DIGIT_FIELD_H = 70;
 
 // Display and BMS readings.
 extern JikongMessenger JKMessenger;
 extern Adafruit_ILI9341 tft;
 extern const uint16_t screenWidth;
 extern const uint16_t screenHeight;
+constexpr uint16_t dotRadius = 8;
+extern const uint16_t dotY;
+extern const uint16_t spacing;
 extern BMSDataStruct BMSData;
 extern BMSDataStruct LastBMSData;
 #endif

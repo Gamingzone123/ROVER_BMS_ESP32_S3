@@ -141,31 +141,23 @@ void drawPasscodeDigit()
         }
     }
 
-    // current encoder position so the user knows what they are entering
-    String posText = " " + String(encoderState + 1) + " ";
-    int16_t x1, y1;
-    uint16_t textW, textH;
+    const uint16_t fieldX = (screenWidth - DIGIT_FIELD_W) / 2 - 7;
+    const uint16_t fieldY = screenHeight / 3;
+
     tft.setTextSize(8);
     tft.setTextColor(ILI9341_CYAN, ILI9341_BLACK);
-    tft.getTextBounds(posText, 0, 0, &x1, &y1, &textW, &textH);
-    tft.setCursor((screenWidth - textW) / 2, screenHeight / 3);
-    tft.println(posText);
+    tft.setCursor(fieldX, fieldY);
+    tft.print(" " + String(encoderState + 1) + " ");
+}
 
-    // Progress dots filled once that digit has been entered.
-    const uint16_t dotRadius = 8;
-    const uint16_t dotY = screenHeight - 30;
-    const uint16_t spacing = screenWidth / (passLength + 1);
-
+void drawPasscodeDots()
+{
     for (uint8_t i = 0; i < passLength; i++)
     {
         uint16_t dotX = spacing * (i + 1);
         if (i < passcodeIndex)
-        {
             tft.fillCircle(dotX, dotY, dotRadius, ILI9341_WHITE);
-        }
         else
-        {
             tft.drawCircle(dotX, dotY, dotRadius, ILI9341_WHITE);
-        }
     }
 }
