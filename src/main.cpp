@@ -26,8 +26,7 @@ void setScreenUpdateRate(uint8_t hz);
 void configureHWTimers(int dataRate = GET_DATA_RATE_HZ, int screenUpdateRate = DISPLAY_UPDATE_HZ);
 void data_timer_ISR();
 void screen_timer_ISR();
-void encoder_quad_ISR();
-void encoder_timeout_ISR();
+void encoder_CL_ISR();
 
 /* ======= The Program =======*/
 
@@ -66,10 +65,7 @@ void setup()
   pinMode(KY040_CLK, INPUT);
   pinMode(KY040_DT, INPUT);
   pinMode(KY040_SW, INPUT);
-
-  encoderPrevState = (digitalRead(KY040_CLK) << 1) | digitalRead(KY040_DT); // initialise encoder state
-  attachInterrupt(digitalPinToInterrupt(KY040_CLK), encoder_quad_ISR, CHANGE);
-  attachInterrupt(digitalPinToInterrupt(KY040_DT), encoder_quad_ISR, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(KY040_CLK), encoder_CL_ISR, RISING);
 
   configureHWTimers();
 }
@@ -77,23 +73,12 @@ void setup()
 void loop()
 {
 
-#if DEBUG_ENABLED
-  static uint8_t lastState = HIGH;
-  uint8_t state = digitalRead(KY040_CLK);
-  if (state != lastState)
-  {
-    Serial.printf("KY040_CLK changed: %d -> %d\n", lastState, state);
-    lastState = state;
-  }
-#endif
-
   if (killFlag)
   {
     killSwitch();
   }
-  if (encoderTimeoutFlag)
+  if (encoderActive && (micros() - lastEncoderChangeus) >= (ENCODER_ATTEMPT_TIMEOUT_ms * 1000UL))
   {
-    encoderTimeoutFlag = false;
     resetToIdle();
 #if DEBUG_ENABLED
     Serial.println("Encoder timed out — resetting to main display");
@@ -326,8 +311,6 @@ void checkPasscode()
 
 void resetToIdle()
 {
-  timerAlarmDisable(encoderTimer);
-
   encoderActive = false;
   encoderMovedSinceStageStart = false;
   encoderMode = MODE_IDLE;
@@ -381,11 +364,6 @@ void configureHWTimers(int dataRate, int screenUpdateRate)
   timerAttachInterrupt(screenTimer, &screen_timer_ISR, true);
   timerAlarmWrite(screenTimer, screenPeriodUs, true);
   timerAlarmEnable(screenTimer);
-
-  /* Encoder inactivity timeout */
-  encoderTimer = timerBegin(2, 80, true); // timer 2
-  timerAttachInterrupt(encoderTimer, &encoder_timeout_ISR, true);
-  timerAlarmWrite(encoderTimer, ENCODER_ATTEMPT_TIMEOUT_ms * 1000UL, false); // autoreload false so it fires once, left disabled here, armed when the encoder touched
 }
 
 void IRAM_ATTR data_timer_ISR()
@@ -398,35 +376,12 @@ void IRAM_ATTR screen_timer_ISR()
   screenUpdateFlag = true;
 }
 
-void IRAM_ATTR encoder_timeout_ISR()
+void IRAM_ATTR encoder_CL_ISR()
 {
-  encoderTimeoutFlag = true;
-}
-
-void IRAM_ATTR encoder_quad_ISR()
-{
-  // Pack both pins into one 2-bit value, CLK in the top bit, DT in the bottom bit
-  uint8_t curState = (digitalRead(KY040_CLK) << 1) | digitalRead(KY040_DT);
-
-  // Combine "where we were" and "where we are" into one 4-bit lookup index.
-  uint8_t index = (encoderPrevState << 2) | curState;
-  int8_t step = QUAD_TABLE[index];
-
-  encoderPrevState = curState; // always update, even on a rejected transition
-
-  if (step == 0)
-  {
-    return; // not a legal single step i.e. a bounce, ignore
-  }
-
-  encoderDirection = (step > 0) ? CLOCKWISE : ANTICLOCKWISE;
+  encoderDirection = (digitalRead(KY040_DT) == HIGH) ? ANTICLOCKWISE : CLOCKWISE;
   lastEncoderChangeus = micros();
 
-  /* Reset encoder timout counter */
-  timerWrite(encoderTimer, 0);
-  timerAlarmEnable(encoderTimer);
-
   encoderActive = true;
-  encoderFlag = true;
   encoderMovedSinceStageStart = true;
+  encoderFlag = true;
 }

@@ -133,7 +133,6 @@ void drawPasscodeDigit()
 {
     if (passcodeIndex == 0)
     {
-        timerWrite(encoderTimer, 0);
         if (!codeScreenTriggered)
         {
             tft.fillScreen(ILI9341_BLACK);

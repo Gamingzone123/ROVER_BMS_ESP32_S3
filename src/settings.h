@@ -4,6 +4,7 @@
 #include <Adafruit_ILI9341.h>
 #include <Jikong_Handler.h>
 #include <string>
+#include <ESP32Encoder.h>
 
 /* ======= Compiler Switches ======= */
 #define DEBUG_ENABLED 1  // for debugging with a PC
@@ -57,7 +58,7 @@ constexpr uint8_t ATTINY_SDA = MAINSDA;
 constexpr uint8_t ATTINY_SCL = MAINSCL;
 
 /*Pins for use with rotary encoder*/
-constexpr uint8_t KY040_CLK = 8;
+constexpr uint8_t KY040_CLK = 3;
 constexpr uint8_t KY040_DT = 15;
 constexpr uint8_t KY040_SW = 16;
 
@@ -159,7 +160,6 @@ extern volatile bool encoderTimeoutFlag;
 // Hardware timers
 extern hw_timer_t *dataTimer;
 extern hw_timer_t *screenTimer;
-extern hw_timer_t *encoderTimer;
 
 // Encoder interaction state.
 extern uint8_t passcodeAttempt[passLength];
@@ -173,8 +173,6 @@ extern SelectedMOSEnum selectedMOS;
 extern bool MOSSwitchSelected;
 extern volatile bool codeScreenTriggered;
 extern volatile bool encoderMovedSinceStageStart;
-extern const int8_t QUAD_TABLE[16];
-extern volatile uint8_t encoderPrevState;
 constexpr uint16_t DIGIT_FIELD_W = 100;
 constexpr uint16_t DIGIT_FIELD_H = 70;
 
