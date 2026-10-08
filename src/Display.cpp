@@ -159,4 +159,5 @@ void drawPasscodeDots()
         else
             tft.drawCircle(dotX, dotY, dotRadius, ILI9341_WHITE);
     }
+lastEncoderChangeus = micros();
 }
