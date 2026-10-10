@@ -4,18 +4,18 @@ volatile bool screenUpdateFlag = false;
 volatile bool getDataFlag = false;
 volatile bool killFlag = false;
 volatile bool encoderFlag = false;
-volatile bool encoderTimeoutFlag = false;
 
 hw_timer_t *dataTimer = NULL;
 hw_timer_t *screenTimer = NULL;
 
 uint8_t passcodeAttempt[passLength] = {};
-volatile ulong lastEncoderChangeus = 0;
+volatile unsigned long long lastEncoderChangeus = 0;
 volatile bool encoderActive = false;
 volatile bool encoderDirection = -1;
 volatile EncoderModeEnum encoderMode = MODE_IDLE;
 uint8_t passcodeIndex = 0;
 uint8_t encoderState = 0;
+bool lastEncoderActive = false;
 SelectedMOSEnum selectedMOS = SEL_CHARGE;
 bool MOSSwitchSelected = false;
 volatile bool codeScreenTriggered = false;

@@ -4,11 +4,10 @@
 #include <Adafruit_ILI9341.h>
 #include <Jikong_Handler.h>
 #include <string>
-#include <ESP32Encoder.h>
 
 /* ======= Compiler Switches ======= */
 #define DEBUG_ENABLED 1  // for debugging with a PC
-#define BMS_ENABLED 0    // set to 0 for testing without the BMS unit
+#define BMS_ENABLED 1    // set to 0 for testing without the BMS unit
 #define ATTINY_ENABLED 0 // set to 0 for testing without ATTiny for LED strip control
 #define ROS_ENABLED 0    // set to 0 for testing without MicroROS
 #define SD_ENABLED 0     // set to 0 for testing without SD card
@@ -82,8 +81,8 @@ constexpr uint8_t cellsPBattery = 6;
 constexpr uint8_t numBatteries = 2;
 constexpr uint8_t MOSPassword[] = {15, 7, 20};
 constexpr uint8_t passLength = sizeof(MOSPassword) / sizeof(MOSPassword[0]); // compute num elements in array
-constexpr uint32_t ENCODER_DIGIT_DWELL_ms = 2500;
-constexpr uint32_t ENCODER_ATTEMPT_TIMEOUT_ms = ENCODER_DIGIT_DWELL_ms * passLength + 1500;
+constexpr unsigned long long ENCODER_DIGIT_DWELL_ms = 2500;
+constexpr unsigned long long ENCODER_ATTEMPT_TIMEOUT_ms = 10000;
 constexpr uint8_t ENCODER_ACTIVE_DISPLAY_UPDATE_HZ = 30;
 constexpr uint8_t GET_DATA_RATE_HZ = 2;
 constexpr uint8_t DISPLAY_UPDATE_HZ = 1;
@@ -163,12 +162,13 @@ extern hw_timer_t *screenTimer;
 
 // Encoder interaction state.
 extern uint8_t passcodeAttempt[passLength];
-extern volatile ulong lastEncoderChangeus;
+extern volatile unsigned long long lastEncoderChangeus;
 extern volatile bool encoderActive;
 extern volatile bool encoderDirection;
 extern volatile EncoderModeEnum encoderMode;
 extern uint8_t passcodeIndex;
 extern uint8_t encoderState;
+extern bool lastEncoderActive; // edge detection
 extern SelectedMOSEnum selectedMOS;
 extern bool MOSSwitchSelected;
 extern volatile bool codeScreenTriggered;

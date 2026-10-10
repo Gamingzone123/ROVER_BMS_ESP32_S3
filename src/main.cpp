@@ -34,6 +34,7 @@ void setup()
 {
 #if DEBUG_ENABLED
   Serial.begin(115200);
+  delay(1500);
 #endif
 #if BMS_ENABLED
   Serial2.begin(115200, SERIAL_8N1, JIKONG_RX, JIKONG_TX);
@@ -77,18 +78,16 @@ void loop()
   {
     killSwitch();
   }
-  if (encoderActive && (micros() - lastEncoderChangeus) >= (ENCODER_ATTEMPT_TIMEOUT_ms * 1000UL))
+  if ((encoderActive && (micros() - lastEncoderChangeus) >= (ENCODER_ATTEMPT_TIMEOUT_ms * 1000ULL)))
   {
     resetToIdle();
 #if DEBUG_ENABLED
     Serial.println("Encoder timed out — resetting to main display");
 #endif
   }
-
-  static bool lastEncoderActiveForTimer = false;
-  if (encoderActive != lastEncoderActiveForTimer) // make screen more responsive when user interacting
+  if (encoderActive != lastEncoderActive) // make screen more responsive when user interacting
   {
-    lastEncoderActiveForTimer = encoderActive;
+    lastEncoderActive = encoderActive;
     setScreenUpdateRate(encoderActive ? ENCODER_ACTIVE_DISPLAY_UPDATE_HZ : DISPLAY_UPDATE_HZ);
 #if DEBUG_ENABLED
     Serial.println(encoderActive ? "Screen refresh: 30Hz (encoder active)" : "Screen refresh: 1Hz (idle)");
@@ -98,7 +97,7 @@ void loop()
   /* Dwell-based confirmation: if the encoder has sat still for ENCODER_DIGIT_DWELL_ms while a selection/entry is in progress, treat the current value as confirmed.
      Alternatives considered: confirm on direction reversal, or confirm via a press on the encoder's SW pin  */
   if (encoderActive && encoderMovedSinceStageStart &&
-      (micros() - lastEncoderChangeus) >= (ENCODER_DIGIT_DWELL_ms * 1000UL))
+      (micros() - lastEncoderChangeus) >= (ENCODER_DIGIT_DWELL_ms * 1000ULL))
   {
     if (encoderMode == MODE_SELECT_MOS)
     {
